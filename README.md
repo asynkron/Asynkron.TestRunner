@@ -1,3 +1,5 @@
+<img src="assets/images/logo.png" width="100%" alt="Asynkron.TestRunner" />
+
 # Asynkron.TestRunner
 
 A .NET global tool that wraps `dotnet test`, captures TRX results, tracks test history, and displays regression charts.
