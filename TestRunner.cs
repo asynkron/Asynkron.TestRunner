@@ -78,6 +78,13 @@ public class TestRunner
 
             Console.WriteLine();
             ChartRenderer.RenderSingleResult(result, previousRun);
+
+            // Show history chart
+            var history = _store.GetRecentRuns(10);
+            if (history.Count > 1)
+            {
+                ChartRenderer.RenderHistory(history);
+            }
         }
         else
         {
