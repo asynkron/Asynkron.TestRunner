@@ -67,6 +67,21 @@ testrunner stats -- dotnet test ./tests/MyTests     # Specific command history
 testrunner stats --history 5                        # Last 5 runs
 ```
 
+### Isolate hanging tests
+
+```bash
+testrunner isolate                  # Find hanging test in all tests
+testrunner isolate "LanguageTests"  # Find within matching tests
+testrunner isolate --timeout 60     # Use 60s timeout (default: 30s)
+```
+
+The isolate command:
+1. Runs all tests to detect a hang
+2. Groups tests by namespace hierarchy
+3. Runs each group in isolation
+4. Drills down into hanging groups
+5. Reports the specific hanging test(s)
+
 ### View regressions
 
 ```bash

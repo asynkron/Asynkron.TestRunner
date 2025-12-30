@@ -35,6 +35,16 @@ static async Task<int> RunAsync(string[] args)
         return await HandleListAsync(listTestArgs, listFilter);
     }
 
+    // Handle "isolate" subcommand
+    if (args.Length > 0 && args[0].Equals("isolate", StringComparison.OrdinalIgnoreCase))
+    {
+        var isolateFilter = args.Length > 1 && !args[1].StartsWith("-") && args[1] != "--" ? args[1] : null;
+        var isolateTimeout = ParseIsolateTimeout(args) ?? 30;
+        var isolateTestArgs = ExtractTestArgs(args, 1) ?? ["dotnet", "test"];
+        var isolateRunner = new IsolateRunner(isolateTestArgs, isolateTimeout);
+        return await isolateRunner.RunAsync(isolateFilter);
+    }
+
     // Handle "regressions" subcommand
     if (args.Length > 0 && args[0].Equals("regressions", StringComparison.OrdinalIgnoreCase))
     {
@@ -125,6 +135,22 @@ static int? ParseTimeout(string[] args)
         }
     }
     return null; // Use default
+}
+
+static int? ParseIsolateTimeout(string[] args)
+{
+    for (var i = 0; i < args.Length; i++)
+    {
+        if (args[i].Equals("--timeout", StringComparison.OrdinalIgnoreCase) ||
+            args[i].Equals("-t", StringComparison.OrdinalIgnoreCase))
+        {
+            if (i + 1 < args.Length && int.TryParse(args[i + 1], out var seconds))
+            {
+                return seconds;
+            }
+        }
+    }
+    return null;
 }
 
 static string? ParseFilter(string[] args)
@@ -322,6 +348,7 @@ static void PrintUsage()
           testrunner "pattern"                                 Run tests matching pattern
           testrunner [options] -- dotnet test [test-options]   Run tests with custom command
           testrunner list ["pattern"]                          List tests without running them
+          testrunner isolate ["pattern"]                       Find hanging test by namespace isolation
           testrunner stats [-- <command>]                      Show history (optionally for specific command)
           testrunner stats --history N                         Show last N runs (default: 10)
           testrunner regressions [-- <command>]                Show regressions vs previous run
@@ -337,14 +364,21 @@ static void PrintUsage()
           testrunner "MyClass"           Runs: dotnet test --filter "FullyQualifiedName~MyClass"
           testrunner "Namespace.Test"    Matches any test containing that pattern
 
+        Isolate Command:
+          Finds hanging tests by running namespace groups in isolation.
+          Drills down hierarchically until the hanging test(s) are found.
+          testrunner isolate                           Isolate in all tests
+          testrunner isolate "LanguageTests"           Isolate within matching tests
+          testrunner isolate --timeout 60 "Tests"      Use 60s timeout (default: 30s)
+
         Examples:
           testrunner                                   Run all tests
           testrunner "UserService"                     Run tests matching 'UserService'
           testrunner list "UserService"                List tests matching 'UserService'
+          testrunner isolate "SlowTests"               Find hanging test in SlowTests
           testrunner --timeout 60 "SlowTests"          Run matching tests with 60s timeout
           testrunner --timeout 0                       Run all tests with no timeout
           testrunner -- dotnet test ./tests/MyTests    Run specific project
-          testrunner stats                             Show history for default command
 
         History is tracked separately per:
           - Project (git repo or current directory)
