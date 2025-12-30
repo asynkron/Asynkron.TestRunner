@@ -1,0 +1,18 @@
+# Build outputs
+**/bin/
+**/obj/
+
+# NuGet
+*.nupkg
+*.snupkg
+
+# Test results
+.testrunner/
+
+# OS
+.DS_Store
+
+# IDE
+.idea/
+.vs/
+*.user
