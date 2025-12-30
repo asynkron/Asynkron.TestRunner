@@ -89,22 +89,22 @@ public class IsolateRunner
         // Group by top-level namespace
         var groups = GroupByNamespaceLevel(remaining, 0);
 
-        foreach (var group in groups.OrderBy(g => g.Key))
+        foreach (var (normalizedPrefix, (originalPrefix, tests)) in groups.OrderBy(g => g.Key))
         {
-            if (IsGroupCompleted(group.Key))
+            if (IsGroupCompleted(normalizedPrefix))
             {
-                Console.WriteLine($"  ✓ {group.Key} (already completed)");
+                Console.WriteLine($"  ✓ {normalizedPrefix} (already completed)");
                 continue;
             }
 
-            var result = await DrillDownAsync(group.Key, group.Value, 0);
+            var result = await DrillDownAsync(normalizedPrefix, originalPrefix, tests, 0);
             hangingTests.AddRange(result);
         }
 
         return hangingTests;
     }
 
-    private async Task<List<string>> DrillDownAsync(string prefix, List<string> tests, int depth)
+    private async Task<List<string>> DrillDownAsync(string normalizedPrefix, string filterPrefix, List<string> tests, int depth)
     {
         var indent = new string(' ', depth * 2);
         var hangingTests = new List<string>();
@@ -127,15 +127,15 @@ public class IsolateRunner
             }
         }
 
-        Console.WriteLine($"{indent}→ Testing group: {prefix} ({tests.Count} tests)");
+        Console.WriteLine($"{indent}→ Testing group: {normalizedPrefix} ({tests.Count} tests)");
 
-        // Run this group
-        var (passed, hung) = await RunTestsAsync(prefix);
+        // Run this group using the original filter prefix
+        var (passed, hung) = await RunTestsAsync(filterPrefix);
 
         if (!hung)
         {
             Console.WriteLine($"{indent}  ✓ Group passes in isolation");
-            _completedPrefixes.Add(prefix);
+            _completedPrefixes.Add(normalizedPrefix);
             return [];
         }
 
@@ -146,8 +146,8 @@ public class IsolateRunner
 
         if (remaining.Count == 0)
         {
-            Console.WriteLine($"{indent}  All tests passed but still hung - likely teardown issue in: {prefix}");
-            return [prefix + " (teardown)"];
+            Console.WriteLine($"{indent}  All tests passed but still hung - likely teardown issue in: {normalizedPrefix}");
+            return [normalizedPrefix + " (teardown)"];
         }
 
         if (remaining.Count == tests.Count && tests.Count <= 3)
@@ -173,7 +173,7 @@ public class IsolateRunner
         var nextLevel = depth + 1;
         var subGroups = GroupByNamespaceLevel(remaining, nextLevel);
 
-        if (subGroups.Count == 1 && subGroups.First().Value.Count == remaining.Count)
+        if (subGroups.Count == 1 && subGroups.First().Value.Tests.Count == remaining.Count)
         {
             // Can't split further by namespace, split by count
             var half = remaining.Count / 2;
@@ -192,12 +192,12 @@ public class IsolateRunner
         }
         else
         {
-            foreach (var subGroup in subGroups.OrderBy(g => g.Key))
+            foreach (var (subNormalized, (subOriginal, subTests)) in subGroups.OrderBy(g => g.Key))
             {
-                if (IsGroupCompleted(subGroup.Key))
+                if (IsGroupCompleted(subNormalized))
                     continue;
 
-                var result = await DrillDownAsync(subGroup.Key, subGroup.Value, depth + 1);
+                var result = await DrillDownAsync(subNormalized, subOriginal, subTests, depth + 1);
                 hangingTests.AddRange(result);
             }
         }
@@ -280,20 +280,24 @@ public class IsolateRunner
         return value.Replace("(", "\\(").Replace(")", "\\)");
     }
 
-    private Dictionary<string, List<string>> GroupByNamespaceLevel(List<string> tests, int level)
+    private Dictionary<string, (string OriginalPrefix, List<string> Tests)> GroupByNamespaceLevel(List<string> tests, int level)
     {
-        var groups = new Dictionary<string, List<string>>();
+        var groups = new Dictionary<string, (string OriginalPrefix, List<string> Tests)>();
 
         foreach (var test in tests)
         {
             // Split on . and _ to handle various naming conventions
             var parts = GetTestNameParts(test);
-            var prefix = string.Join(".", parts.Take(Math.Min(level + 1, parts.Length)));
+            var normalizedPrefix = string.Join(".", parts.Take(Math.Min(level + 1, parts.Length)));
 
-            if (!groups.ContainsKey(prefix))
-                groups[prefix] = [];
+            if (!groups.ContainsKey(normalizedPrefix))
+            {
+                // Get the original prefix from the first test (preserving original separators)
+                var originalPrefix = GetOriginalPrefix(test, level + 1);
+                groups[normalizedPrefix] = (originalPrefix, []);
+            }
 
-            groups[prefix].Add(test);
+            groups[normalizedPrefix].Tests.Add(test);
         }
 
         return groups;
@@ -314,6 +318,28 @@ public class IsolateRunner
         var baseName = GetTestBaseName(testName);
         // Split on . and _ to handle both "Namespace.Class.Method" and "Array_includes_length"
         return baseName.Split(NameSeparators, StringSplitOptions.RemoveEmptyEntries);
+    }
+
+    private static string GetOriginalPrefix(string testName, int partCount)
+    {
+        // Get the original prefix from the test name (preserving original separators)
+        // For "Array_includes_length(...)" with partCount=2, returns "Array_includes"
+        var baseName = GetTestBaseName(testName);
+        var separatorCount = 0;
+
+        for (var i = 0; i < baseName.Length; i++)
+        {
+            if (NameSeparators.Contains(baseName[i]))
+            {
+                separatorCount++;
+                if (separatorCount >= partCount)
+                {
+                    return baseName[..i];
+                }
+            }
+        }
+
+        return baseName; // Return full base name if not enough separators
     }
 
     private void MarkCompletedPrefixes(List<string> allTests, HashSet<string> passed)
