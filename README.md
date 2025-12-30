@@ -11,6 +11,8 @@ A .NET global tool that wraps `dotnet test`, captures TRX results, tracks test h
 - Detects regressions (tests that passed before but now fail)
 - Detects fixes (tests that failed before but now pass)
 - Supports color and non-color (CI/piped) output modes
+- Default 20s per-test timeout (detects and reports hung tests)
+- Easy filter syntax for running specific tests
 
 ## Installation
 
@@ -20,24 +22,45 @@ dotnet tool install -g Asynkron.TestRunner
 
 ## Usage
 
-### Run tests
+### Run all tests
+
+```bash
+testrunner                  # Runs: dotnet test
+```
+
+### Run filtered tests
+
+```bash
+testrunner "MyClass"        # Runs: dotnet test --filter "FullyQualifiedName~MyClass"
+testrunner "Namespace.Test" # Matches any test containing that pattern
+```
+
+### Custom command
 
 ```bash
 testrunner -- dotnet test ./tests/MyTests
 testrunner -- dotnet test --filter "Category=Unit"
 ```
 
+### Options
+
+```bash
+testrunner --timeout 60 "SlowTests"   # 60s per-test timeout (default: 20s)
+testrunner --help                      # Show help
+```
+
 ### View history
 
 ```bash
-testrunner stats -- dotnet test ./tests/MyTests
-testrunner stats --history 5 -- dotnet test ./tests/MyTests
+testrunner stats                                    # Default command history
+testrunner stats -- dotnet test ./tests/MyTests     # Specific command history
+testrunner stats --history 5                        # Last 5 runs
 ```
 
 ### View regressions
 
 ```bash
-testrunner regressions -- dotnet test ./tests/MyTests
+testrunner regressions      # Compare last 2 runs
 ```
 
 ### Clear history
