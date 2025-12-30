@@ -286,9 +286,8 @@ public class IsolateRunner
 
         foreach (var test in tests)
         {
-            // Strip parameters from parameterized tests: "Namespace.Class.Method(params)" -> "Namespace.Class.Method"
-            var baseName = GetTestBaseName(test);
-            var parts = baseName.Split('.');
+            // Split on . and _ to handle various naming conventions
+            var parts = GetTestNameParts(test);
             var prefix = string.Join(".", parts.Take(Math.Min(level + 1, parts.Length)));
 
             if (!groups.ContainsKey(prefix))
@@ -300,11 +299,21 @@ public class IsolateRunner
         return groups;
     }
 
+    private static readonly char[] NameSeparators = ['.', '_', ','];
+
     private static string GetTestBaseName(string testName)
     {
         // Strip parameters: "Namespace.Class.Method(param1, param2)" -> "Namespace.Class.Method"
         var parenIndex = testName.IndexOf('(');
         return parenIndex > 0 ? testName[..parenIndex] : testName;
+    }
+
+    private static string[] GetTestNameParts(string testName)
+    {
+        // Strip parameters first
+        var baseName = GetTestBaseName(testName);
+        // Split on . and _ to handle both "Namespace.Class.Method" and "Array_includes_length"
+        return baseName.Split(NameSeparators, StringSplitOptions.RemoveEmptyEntries);
     }
 
     private void MarkCompletedPrefixes(List<string> allTests, HashSet<string> passed)
@@ -317,8 +326,7 @@ public class IsolateRunner
 
         foreach (var test in allTests)
         {
-            var baseName = GetTestBaseName(test);
-            var parts = baseName.Split('.');
+            var parts = GetTestNameParts(test);
             for (var i = 1; i <= parts.Length; i++)
             {
                 var prefix = string.Join(".", parts.Take(i));
@@ -330,8 +338,7 @@ public class IsolateRunner
 
         foreach (var test in passed)
         {
-            var baseName = GetTestBaseName(test);
-            var parts = baseName.Split('.');
+            var parts = GetTestNameParts(test);
             for (var i = 1; i <= parts.Length; i++)
             {
                 var prefix = string.Join(".", parts.Take(i));

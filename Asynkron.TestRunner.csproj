@@ -10,7 +10,7 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>testrunner</ToolCommandName>
     <PackageId>Asynkron.TestRunner</PackageId>
-    <Version>0.5.0</Version>
+    <Version>0.5.1</Version>
     <Authors>Asynkron</Authors>
     <Description>A .NET global tool that wraps dotnet test, captures TRX results, tracks test history, and displays regression charts.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
