@@ -30,7 +30,7 @@ public static class TrxParser
             var skipped = int.Parse(counters.Attribute("notExecuted")?.Value ?? "0");
 
             // Extract individual test results
-            var (passedTests, failedTests) = ExtractTestNames(root);
+            var (passedTests, failedTests, timedOutTests) = ExtractTestNames(root);
 
             // Get timing info
             var times = root.Element(TrxNamespace + "Times");
@@ -59,7 +59,8 @@ public static class TrxParser
                 Duration = duration,
                 TrxFilePath = filePath,
                 PassedTests = passedTests,
-                FailedTests = failedTests
+                FailedTests = failedTests,
+                TimedOutTests = timedOutTests
             };
         }
         catch
@@ -68,14 +69,15 @@ public static class TrxParser
         }
     }
 
-    private static (List<string> Passed, List<string> Failed) ExtractTestNames(XElement root)
+    private static (List<string> Passed, List<string> Failed, List<string> TimedOut) ExtractTestNames(XElement root)
     {
         var passed = new List<string>();
         var failed = new List<string>();
+        var timedOut = new List<string>();
 
         var results = root.Element(TrxNamespace + "Results");
         if (results == null)
-            return (passed, failed);
+            return (passed, failed, timedOut);
 
         foreach (var result in results.Elements(TrxNamespace + "UnitTestResult"))
         {
@@ -91,12 +93,35 @@ public static class TrxParser
                     passed.Add(testName);
                     break;
                 case "failed":
-                    failed.Add(testName);
+                    // Check if it's a timeout failure
+                    var errorMessage = result
+                        .Element(TrxNamespace + "Output")?
+                        .Element(TrxNamespace + "ErrorInfo")?
+                        .Element(TrxNamespace + "Message")?.Value ?? "";
+
+                    if (IsTimeoutFailure(errorMessage))
+                    {
+                        timedOut.Add(testName);
+                    }
+                    else
+                    {
+                        failed.Add(testName);
+                    }
                     break;
             }
         }
 
-        return (passed, failed);
+        return (passed, failed, timedOut);
+    }
+
+    private static bool IsTimeoutFailure(string errorMessage)
+    {
+        var lowerMessage = errorMessage.ToLowerInvariant();
+        return lowerMessage.Contains("timed out") ||
+               lowerMessage.Contains("timeout") ||
+               lowerMessage.Contains("hang") ||
+               lowerMessage.Contains("exceeded") ||
+               lowerMessage.Contains("did not complete");
     }
 
     public static TestRunResult? ParseFromDirectory(string trxDirectory)
@@ -128,7 +153,8 @@ public static class TrxParser
             Duration = TimeSpan.FromTicks(results.Max(r => r!.Duration.Ticks)),
             TrxFilePath = trxDirectory,
             PassedTests = results.SelectMany(r => r!.PassedTests).ToList(),
-            FailedTests = results.SelectMany(r => r!.FailedTests).ToList()
+            FailedTests = results.SelectMany(r => r!.FailedTests).ToList(),
+            TimedOutTests = results.SelectMany(r => r!.TimedOutTests).ToList()
         };
     }
 }

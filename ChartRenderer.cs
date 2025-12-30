@@ -14,6 +14,7 @@ public static class ChartRenderer
     private static string Green => UseColor ? "\x1b[32m" : "";
     private static string Red => UseColor ? "\x1b[31m" : "";
     private static string Yellow => UseColor ? "\x1b[33m" : "";
+    private static string Magenta => UseColor ? "\x1b[35m" : "";
     private static string Dim => UseColor ? "\x1b[2m" : "";
     private static string Bold => UseColor ? "\x1b[1m" : "";
 
@@ -76,18 +77,42 @@ public static class ChartRenderer
     {
         Console.WriteLine();
 
-        var statusColor = result.Failed > 0 ? Red : Green;
-        var statusText = result.Failed > 0 ? "FAILED" : "PASSED";
+        var hasFailures = result.FailedTests.Count > 0 || result.TimedOutTests.Count > 0;
+        var statusColor = hasFailures ? Red : Green;
+        var statusText = hasFailures ? "FAILED" : "PASSED";
 
         Console.WriteLine($"{statusColor}{Bold}{statusText}{Reset}");
         Console.WriteLine(new string('─', 50));
 
         Console.WriteLine($"  {Green}Passed:{Reset}  {result.Passed}");
-        Console.WriteLine($"  {Red}Failed:{Reset}  {result.Failed}");
+        if (result.TimedOutTests.Count > 0)
+        {
+            Console.WriteLine($"  {Magenta}Timeout:{Reset} {result.TimedOutTests.Count}");
+            Console.WriteLine($"  {Red}Failed:{Reset}  {result.FailedTests.Count}");
+        }
+        else
+        {
+            Console.WriteLine($"  {Red}Failed:{Reset}  {result.Failed}");
+        }
         Console.WriteLine($"  {Yellow}Skipped:{Reset} {result.Skipped}");
         Console.WriteLine($"  {Dim}Total:{Reset}   {result.Total}");
         Console.WriteLine($"  {Dim}Duration:{Reset} {FormatDuration(result.Duration)}");
         Console.WriteLine($"  {Dim}Pass Rate:{Reset} {result.PassRate:F1}%");
+
+        // Show timed out tests
+        if (result.TimedOutTests.Count > 0)
+        {
+            Console.WriteLine();
+            Console.WriteLine($"{Magenta}{Bold}Timed Out ({result.TimedOutTests.Count}):{Reset}");
+            foreach (var test in result.TimedOutTests.Take(10))
+            {
+                Console.WriteLine($"  {Magenta}⏱{Reset} {test}");
+            }
+            if (result.TimedOutTests.Count > 10)
+            {
+                Console.WriteLine($"  {Dim}... and {result.TimedOutTests.Count - 10} more{Reset}");
+            }
+        }
 
         // Show regressions if we have a previous run to compare
         if (previousRun != null)

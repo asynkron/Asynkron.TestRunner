@@ -5,11 +5,15 @@ namespace Asynkron.TestRunner;
 
 public class TestRunner
 {
-    private readonly ResultStore _store;
+    private const int DefaultTimeoutSeconds = 20;
 
-    public TestRunner(ResultStore store)
+    private readonly ResultStore _store;
+    private readonly int _timeoutSeconds;
+
+    public TestRunner(ResultStore store, int? timeoutSeconds = null)
     {
         _store = store;
+        _timeoutSeconds = timeoutSeconds ?? DefaultTimeoutSeconds;
     }
 
     public async Task<int> RunTestsAsync(string[] args)
@@ -18,8 +22,8 @@ public class TestRunner
         var resultsDir = Path.Combine(_store.StoreFolder, runId);
         Directory.CreateDirectory(resultsDir);
 
-        // Build the command with TRX logger injected
-        var processArgs = BuildArgsWithTrxLogger(args, resultsDir);
+        // Build the command with TRX logger and blame-hang injected
+        var processArgs = BuildArgs(args, resultsDir, _timeoutSeconds);
 
         // Find the executable (first arg after --)
         var executable = "dotnet";
@@ -91,10 +95,13 @@ public class TestRunner
             Console.WriteLine("Warning: No TRX results found. Was the test run successful?");
         }
 
+        // Output timeout info for AI agents and users
+        Console.WriteLine($"[testrunner] Per-test timeout: {_timeoutSeconds}s (use --timeout <seconds> to change)");
+
         return process.ExitCode;
     }
 
-    private static string[] BuildArgsWithTrxLogger(string[] args, string resultsDir)
+    private static string[] BuildArgs(string[] args, string resultsDir, int timeoutSeconds)
     {
         var argsList = args.ToList();
 
@@ -119,6 +126,17 @@ public class TestRunner
         {
             argsList.Add("--results-directory");
             argsList.Add(resultsDir);
+        }
+
+        // Add blame-hang for per-test timeout (unless already specified)
+        var hasBlameHang = argsList.Any(a =>
+            a.StartsWith("--blame-hang", StringComparison.OrdinalIgnoreCase));
+
+        if (!hasBlameHang && timeoutSeconds > 0)
+        {
+            argsList.Add("--blame-hang");
+            argsList.Add("--blame-hang-timeout");
+            argsList.Add($"{timeoutSeconds}s");
         }
 
         return argsList.ToArray();

@@ -34,6 +34,9 @@ static async Task<int> RunAsync(string[] args)
         return HandleRegressions(store);
     }
 
+    // Parse --timeout before the -- separator
+    var timeout = ParseTimeout(args);
+
     // Handle "--" separator for running tests
     var separatorIndex = Array.IndexOf(args, "--");
     if (separatorIndex >= 0)
@@ -46,7 +49,7 @@ static async Task<int> RunAsync(string[] args)
         }
 
         var store = new ResultStore(testArgs);
-        var runner = new TestRunner(store);
+        var runner = new TestRunner(store, timeout);
         return await runner.RunTestsAsync(testArgs);
     }
 
@@ -59,7 +62,7 @@ static async Task<int> RunAsync(string[] args)
             : args;
 
         var store = new ResultStore(testArgs);
-        var runner = new TestRunner(store);
+        var runner = new TestRunner(store, timeout);
         return await runner.RunTestsAsync(testArgs);
     }
 
@@ -75,6 +78,22 @@ static string[]? ExtractTestArgs(string[] args, int startIndex)
         return args.Skip(separatorIndex + 1).ToArray();
     }
     return null;
+}
+
+static int? ParseTimeout(string[] args)
+{
+    for (var i = 0; i < args.Length; i++)
+    {
+        if (args[i].Equals("--timeout", StringComparison.OrdinalIgnoreCase) ||
+            args[i].Equals("-t", StringComparison.OrdinalIgnoreCase))
+        {
+            if (i + 1 < args.Length && int.TryParse(args[i + 1], out var seconds))
+            {
+                return seconds;
+            }
+        }
+    }
+    return null; // Use default
 }
 
 static int HandleStats(string[] args, ResultStore store, string[]? testArgs)
@@ -151,17 +170,21 @@ static void PrintUsage()
         testrunner - .NET Test Runner with History
 
         Usage:
-          testrunner -- dotnet test [options]           Run tests and capture results
-          testrunner stats -- dotnet test [options]     Show history for specific command
-          testrunner stats --history N -- <command>     Show last N runs (default: 10)
-          testrunner regressions -- <command>           Show regressions vs previous run
-          testrunner clear                              Clear all test history
+          testrunner [options] -- dotnet test [test-options]   Run tests and capture results
+          testrunner stats -- dotnet test [test-options]       Show history for specific command
+          testrunner stats --history N -- <command>            Show last N runs (default: 10)
+          testrunner regressions -- <command>                  Show regressions vs previous run
+          testrunner clear                                     Clear all test history
+
+        Options:
+          --timeout <seconds>    Per-test timeout in seconds (default: 20)
+                                 Tests exceeding this are killed and marked as failed
 
         Examples:
           testrunner -- dotnet test ./tests/MyTests
+          testrunner --timeout 60 -- dotnet test ./tests/MyTests
           testrunner -- dotnet test --filter "Category=Unit"
           testrunner stats -- dotnet test ./tests/MyTests
-          testrunner regressions -- dotnet test --filter "Category=Unit"
 
         History is tracked separately per:
           - Project (git repo or current directory)

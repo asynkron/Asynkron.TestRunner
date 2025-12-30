@@ -11,9 +11,14 @@ public class TestRunResult
     public string? TrxFilePath { get; set; }
 
     /// <summary>
-    /// Names of tests that failed in this run
+    /// Names of tests that failed in this run (assertion failures)
     /// </summary>
     public List<string> FailedTests { get; set; } = [];
+
+    /// <summary>
+    /// Names of tests that timed out (hung)
+    /// </summary>
+    public List<string> TimedOutTests { get; set; } = [];
 
     /// <summary>
     /// Names of tests that passed in this run
