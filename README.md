@@ -42,10 +42,18 @@ testrunner -- dotnet test ./tests/MyTests
 testrunner -- dotnet test --filter "Category=Unit"
 ```
 
+### List tests (without running)
+
+```bash
+testrunner list                 # List all tests
+testrunner list "Storage"       # List tests matching 'Storage'
+```
+
 ### Options
 
 ```bash
-testrunner --timeout 60 "SlowTests"   # 60s per-test timeout (default: 20s)
+testrunner --timeout 60 "SlowTests"   # 60s hang timeout (default: 20s)
+testrunner --timeout 0                 # Disable hang detection
 testrunner --help                      # Show help
 ```
 

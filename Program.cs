@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Asynkron.TestRunner;
 
 return await RunAsync(args);
@@ -24,6 +25,14 @@ static async Task<int> RunAsync(string[] args)
     {
         var clearStore = new ResultStore();
         return HandleClear(clearStore);
+    }
+
+    // Handle "list" subcommand
+    if (args.Length > 0 && args[0].Equals("list", StringComparison.OrdinalIgnoreCase))
+    {
+        var listFilter = args.Length > 1 && !args[1].StartsWith("-") && args[1] != "--" ? args[1] : null;
+        var listTestArgs = ExtractTestArgs(args, 1) ?? ["dotnet", "test"];
+        return await HandleListAsync(listTestArgs, listFilter);
     }
 
     // Handle "regressions" subcommand
@@ -217,6 +226,65 @@ static int HandleClear(ResultStore store)
     return 0;
 }
 
+static async Task<int> HandleListAsync(string[] testArgs, string? filter)
+{
+    var argsList = testArgs.ToList();
+
+    // Add --list-tests flag
+    argsList.Add("--list-tests");
+
+    // Inject filter if specified
+    if (filter != null)
+    {
+        argsList.Add("--filter");
+        argsList.Add($"FullyQualifiedName~{filter}");
+    }
+
+    var executable = "dotnet";
+    var commandArgs = argsList.ToArray();
+
+    if (commandArgs.Length > 0 && commandArgs[0] == "dotnet")
+    {
+        commandArgs = commandArgs.Skip(1).ToArray();
+    }
+
+    var startInfo = new ProcessStartInfo
+    {
+        FileName = executable,
+        RedirectStandardOutput = true,
+        RedirectStandardError = true,
+        UseShellExecute = false,
+        CreateNoWindow = true
+    };
+
+    foreach (var arg in commandArgs)
+    {
+        startInfo.ArgumentList.Add(arg);
+    }
+
+    Console.WriteLine($"Listing: {executable} {string.Join(" ", commandArgs)}");
+    Console.WriteLine();
+
+    using var process = new Process { StartInfo = startInfo };
+
+    process.OutputDataReceived += (_, e) =>
+    {
+        if (e.Data != null) Console.WriteLine(e.Data);
+    };
+
+    process.ErrorDataReceived += (_, e) =>
+    {
+        if (e.Data != null) Console.Error.WriteLine(e.Data);
+    };
+
+    process.Start();
+    process.BeginOutputReadLine();
+    process.BeginErrorReadLine();
+
+    await process.WaitForExitAsync();
+    return process.ExitCode;
+}
+
 static int HandleRegressions(ResultStore store)
 {
     var runs = store.GetRecentRuns(2);
@@ -253,14 +321,16 @@ static void PrintUsage()
           testrunner                                           Run 'dotnet test' with defaults
           testrunner "pattern"                                 Run tests matching pattern
           testrunner [options] -- dotnet test [test-options]   Run tests with custom command
+          testrunner list ["pattern"]                          List tests without running them
           testrunner stats [-- <command>]                      Show history (optionally for specific command)
           testrunner stats --history N                         Show last N runs (default: 10)
           testrunner regressions [-- <command>]                Show regressions vs previous run
           testrunner clear                                     Clear all test history
 
         Options:
-          -t, --timeout <seconds>    Per-test timeout in seconds (default: 20)
-                                     Tests exceeding this are killed and marked as failed
+          -t, --timeout <seconds>    Hang detection timeout in seconds (default: 20)
+                                     If a test runs longer than this, the test host is killed
+                                     Use --timeout 0 to disable hang detection
           -h, --help                 Show this help message
 
         Filter Pattern:
@@ -270,10 +340,11 @@ static void PrintUsage()
         Examples:
           testrunner                                   Run all tests
           testrunner "UserService"                     Run tests matching 'UserService'
+          testrunner list "UserService"                List tests matching 'UserService'
           testrunner --timeout 60 "SlowTests"          Run matching tests with 60s timeout
+          testrunner --timeout 0                       Run all tests with no timeout
           testrunner -- dotnet test ./tests/MyTests    Run specific project
           testrunner stats                             Show history for default command
-          testrunner stats -- dotnet test ./MyTests    Show history for specific project
 
         History is tracked separately per:
           - Project (git repo or current directory)
