@@ -78,6 +78,5 @@ eventually, there will be only single hanging tests left. which we can present t
     - Shows timeout description in output
   - Added 14 new unit tests in `TimeoutStrategyTests.cs`
   - All 49 tests pass
-- [ ] Consider parallel execution of non-hanging test groups
 - [ ] Document the testrunner usage and configuration options
 - [ ] Ensure we can merge TRX results from multiple runs effectively

@@ -38,10 +38,11 @@ static async Task<int> RunAsync(string[] args)
     // Handle "isolate" subcommand
     if (args.Length > 0 && args[0].Equals("isolate", StringComparison.OrdinalIgnoreCase))
     {
-        var isolateFilter = args.Length > 1 && !args[1].StartsWith("-") && args[1] != "--" ? args[1] : null;
+        var isolateFilter = ParseIsolateFilter(args);
         var isolateTimeout = ParseIsolateTimeout(args) ?? 30;
+        var isolateParallel = ParseParallelism(args);
         var isolateTestArgs = ExtractTestArgs(args, 1) ?? ["dotnet", "test"];
-        var isolateRunner = new IsolateRunner(isolateTestArgs, isolateTimeout, isolateFilter);
+        var isolateRunner = new IsolateRunner(isolateTestArgs, isolateTimeout, isolateFilter, isolateParallel);
         return await isolateRunner.RunAsync(isolateFilter);
     }
 
@@ -147,6 +148,57 @@ static int? ParseIsolateTimeout(string[] args)
             if (i + 1 < args.Length && int.TryParse(args[i + 1], out var seconds))
             {
                 return seconds;
+            }
+        }
+    }
+    return null;
+}
+
+static string? ParseIsolateFilter(string[] args)
+{
+    for (var i = 1; i < args.Length; i++)
+    {
+        var arg = args[i];
+
+        if (arg == "--")
+            break;
+
+        if (arg.StartsWith("-"))
+        {
+            if ((arg.Equals("--timeout", StringComparison.OrdinalIgnoreCase) ||
+                 arg.Equals("-t", StringComparison.OrdinalIgnoreCase) ||
+                 arg.Equals("--parallel", StringComparison.OrdinalIgnoreCase) ||
+                 arg.Equals("--max-parallel", StringComparison.OrdinalIgnoreCase) ||
+                 arg.Equals("-p", StringComparison.OrdinalIgnoreCase)) &&
+                i + 1 < args.Length)
+            {
+                i++;
+            }
+            continue;
+        }
+
+        return arg;
+    }
+
+    return null;
+}
+
+static int? ParseParallelism(string[] args)
+{
+    for (var i = 0; i < args.Length; i++)
+    {
+        var arg = args[i];
+
+        if (arg == "--")
+            break;
+
+        if (arg.Equals("--parallel", StringComparison.OrdinalIgnoreCase) ||
+            arg.Equals("--max-parallel", StringComparison.OrdinalIgnoreCase) ||
+            arg.Equals("-p", StringComparison.OrdinalIgnoreCase))
+        {
+            if (i + 1 < args.Length && int.TryParse(args[i + 1], out var count))
+            {
+                return count;
             }
         }
     }
@@ -358,6 +410,8 @@ static void PrintUsage()
           -t, --timeout <seconds>    Hang detection timeout in seconds (default: 20)
                                      If a test runs longer than this, the test host is killed
                                      Use --timeout 0 to disable hang detection
+          -p, --parallel <count>     Max parallel isolate batches (default: 1)
+                                     Can also be set with TESTRUNNER_ISOLATE_PARALLEL
           -h, --help                 Show this help message
 
         Filter Pattern:
@@ -370,6 +424,7 @@ static void PrintUsage()
           testrunner isolate                           Isolate in all tests
           testrunner isolate "LanguageTests"           Isolate within matching tests
           testrunner isolate --timeout 60 "Tests"      Use 60s timeout (default: 30s)
+          testrunner isolate --parallel 4 "Tests"      Run up to 4 batches in parallel
 
         Examples:
           testrunner                                   Run all tests
