@@ -1,27 +1,56 @@
 using System.Diagnostics;
+using Spectre.Console;
 
 namespace Asynkron.TestRunner;
 
 public class IsolateRunner
 {
+    private const int MaxTestsPerBatch = 5000;
+
     private readonly int _timeoutSeconds;
     private readonly string[] _baseTestArgs;
-    private readonly HashSet<string> _completedPrefixes = [];
+    private readonly string? _initialFilter;
+    private TestTree? _testTree;
 
-    public IsolateRunner(string[] baseTestArgs, int timeoutSeconds = 30)
+    private record TestBatch(string Label, List<string> Tests, List<string> FilterPrefixes);
+
+    private record BatchRunResult(
+        string Label,
+        int TotalTests,
+        HashSet<string> Passed,
+        HashSet<string> Failed,
+        HashSet<string> TimedOut,
+        int ExitCode,
+        bool Hung,
+        bool HadResults,
+        string? Reason)
+    {
+        public bool Succeeded => !Hung &&
+                                 Failed.Count == 0 &&
+                                 TimedOut.Count == 0 &&
+                                 (HadResults || ExitCode == 0) &&
+                                 (Passed.Count > 0 || HadResults);
+    }
+
+    public IsolateRunner(string[] baseTestArgs, int timeoutSeconds = 30, string? initialFilter = null)
     {
         _baseTestArgs = baseTestArgs;
         _timeoutSeconds = timeoutSeconds;
+        _initialFilter = initialFilter;
     }
 
     public async Task<int> RunAsync(string? initialFilter = null)
     {
-        Console.WriteLine("Isolating hanging test(s)...");
+        // Use constructor filter if no parameter provided
+        var filter = initialFilter ?? _initialFilter;
+
+        Console.WriteLine("Isolating tests in smaller groups...");
+        if (filter != null)
+            Console.WriteLine($"Filter: {filter}");
         Console.WriteLine();
 
-        // Step 1: List all tests
-        Console.WriteLine("Step 1: Discovering tests...");
-        var allTests = await ListTestsAsync(initialFilter);
+        Console.WriteLine("Discovering tests...");
+        var allTests = await ListTestsAsync(filter);
         if (allTests.Count == 0)
         {
             Console.WriteLine("No tests found.");
@@ -30,365 +59,471 @@ public class IsolateRunner
         Console.WriteLine($"Found {allTests.Count} tests.");
         Console.WriteLine();
 
-        // Step 2: Run all tests to see if there's a hang
-        Console.WriteLine("Step 2: Running all tests to detect hang...");
-        var (passed, hung) = await RunTestsAsync(initialFilter);
-
-        if (!hung)
-        {
-            Console.WriteLine("All tests passed without hanging!");
-            return 0;
-        }
-
-        Console.WriteLine($"Hang detected! {passed.Count} tests passed before hang.");
+        // Build and display test tree
+        _testTree = new TestTree();
+        _testTree.AddTests(allTests);
+        Console.WriteLine($"Total tests in tree: {_testTree.Root.TotalTestCount}");
+        Console.WriteLine("Test hierarchy:");
+        _testTree.Render(maxDepth: 5);
         Console.WriteLine();
 
-        // Mark completed prefixes based on passed tests
-        MarkCompletedPrefixes(allTests, passed);
+        // Build once up front so isolation runs can use --no-build
+        if (NeedsDotnetTest())
+        {
+            var built = await EnsurePrebuiltAsync();
+            if (!built)
+            {
+                Console.WriteLine("Prebuild failed. Aborting isolation.");
+                return 1;
+            }
+        }
 
-        // Step 3: Find hanging test by drilling down
-        Console.WriteLine("Step 3: Isolating hanging test(s)...");
+        var batches = BuildTestBatches(_testTree.Root);
+
+        Console.WriteLine($"Running {batches.Count} group(s) (<= {MaxTestsPerBatch} tests each)...");
         Console.WriteLine();
 
-        var hangingTests = await IsolateHangingTestsAsync(allTests, passed, initialFilter);
-
-        if (hangingTests.Count > 0)
+        var results = new List<BatchRunResult>();
+        var index = 1;
+        foreach (var batch in batches)
         {
-            Console.WriteLine();
-            Console.WriteLine("═══════════════════════════════════════════════════════");
-            Console.WriteLine("HANGING TEST(S) FOUND:");
-            Console.WriteLine("═══════════════════════════════════════════════════════");
-            foreach (var test in hangingTests)
+            Console.WriteLine($"[{index}/{batches.Count}] {batch.Label} ({batch.Tests.Count} tests)");
+
+            var result = await RunBatchAsync(batch);
+            results.Add(result);
+
+            if (result.Succeeded)
             {
-                Console.WriteLine($"  ⏱ {test}");
+                Console.WriteLine($"  ✓ Passed (exit {result.ExitCode}, results: {result.Passed.Count})");
             }
-            Console.WriteLine("═══════════════════════════════════════════════════════");
-        }
-        else
-        {
-            Console.WriteLine("Could not isolate the hanging test. It may be an ordering/interaction issue.");
-        }
-
-        return hangingTests.Count > 0 ? 0 : 1;
-    }
-
-    private async Task<List<string>> IsolateHangingTestsAsync(
-        List<string> allTests,
-        HashSet<string> passed,
-        string? baseFilter)
-    {
-        var hangingTests = new List<string>();
-        var remaining = allTests.Where(t => !passed.Contains(t)).ToList();
-
-        if (remaining.Count == 0)
-        {
-            Console.WriteLine("All tests passed - hang may be in test cleanup/teardown.");
-            return hangingTests;
-        }
-
-        // Group by top-level namespace
-        var groups = GroupByNamespaceLevel(remaining, 0);
-
-        foreach (var (normalizedPrefix, (originalPrefix, tests)) in groups.OrderBy(g => g.Key))
-        {
-            if (IsGroupCompleted(normalizedPrefix))
+            else if (result.Hung)
             {
-                Console.WriteLine($"  ✓ {normalizedPrefix} (already completed)");
-                continue;
-            }
-
-            var result = await DrillDownAsync(normalizedPrefix, originalPrefix, tests, 0);
-            hangingTests.AddRange(result);
-        }
-
-        return hangingTests;
-    }
-
-    private async Task<List<string>> DrillDownAsync(string normalizedPrefix, string filterPrefix, List<string> tests, int depth)
-    {
-        var indent = new string(' ', depth * 2);
-        var hangingTests = new List<string>();
-
-        // If only one test, that's our culprit
-        if (tests.Count == 1)
-        {
-            Console.WriteLine($"{indent}→ Testing: {tests[0]}");
-            var (_, singleHung) = await RunTestsAsync(tests[0]);
-            if (singleHung)
-            {
-                Console.WriteLine($"{indent}  ⏱ HANGS: {tests[0]}");
-                return [tests[0]];
+                Console.WriteLine($"  ⏱ Hang/timeout suspected (timed out: {result.TimedOut.Count})");
+                foreach (var timedOut in result.TimedOut)
+                {
+                    Console.WriteLine($"    ⏱ {timedOut}");
+                }
             }
             else
             {
-                Console.WriteLine($"{indent}  ✓ Passes in isolation");
-                _completedPrefixes.Add(tests[0]);
-                return [];
-            }
-        }
-
-        Console.WriteLine($"{indent}→ Testing group: {normalizedPrefix} ({tests.Count} tests)");
-
-        // Run this group using the original filter prefix
-        var (passed, hung) = await RunTestsAsync(filterPrefix);
-
-        if (!hung)
-        {
-            Console.WriteLine($"{indent}  ✓ Group passes in isolation");
-            _completedPrefixes.Add(normalizedPrefix);
-            return [];
-        }
-
-        Console.WriteLine($"{indent}  ⏱ Group hangs! Drilling down...");
-
-        // Get remaining tests in this group
-        var remaining = tests.Where(t => !passed.Contains(t)).ToList();
-
-        if (remaining.Count == 0)
-        {
-            Console.WriteLine($"{indent}  All tests passed but still hung - likely teardown issue in: {normalizedPrefix}");
-            return [normalizedPrefix + " (teardown)"];
-        }
-
-        if (remaining.Count == tests.Count && tests.Count <= 3)
-        {
-            // No tests passed and only a few left - test each one
-            foreach (var test in remaining)
-            {
-                var (_, testHung) = await RunTestsAsync(test);
-                if (testHung)
+                var reason = result.Reason ?? $"exit code {result.ExitCode}";
+                Console.WriteLine($"  ✗ Failed ({result.Failed.Count} failed, {result.Passed.Count} passed, {reason})");
+                foreach (var failed in result.Failed.Take(3))
                 {
-                    Console.WriteLine($"{indent}  ⏱ HANGS: {test}");
-                    hangingTests.Add(test);
+                    Console.WriteLine($"    ✗ {failed}");
                 }
-                else
+                if (result.Failed.Count > 3)
                 {
-                    Console.WriteLine($"{indent}  ✓ {test} passes in isolation");
+                    Console.WriteLine($"    ...and {result.Failed.Count - 3} more");
+                }
+                if (!result.HadResults)
+                {
+                    Console.WriteLine("    ⚠️ No TRX results captured for this batch (likely filter mismatch).");
                 }
             }
-            return hangingTests;
+
+            Console.WriteLine();
+            index++;
         }
 
-        // Drill down to next namespace level
-        var nextLevel = depth + 1;
-        var subGroups = GroupByNamespaceLevel(remaining, nextLevel);
+        var hangingGroups = results.Where(r => r.Hung).ToList();
+        var failingGroups = results.Where(r => !r.Hung && !r.Succeeded).ToList();
+        var passedGroups = results.Count - hangingGroups.Count - failingGroups.Count;
 
-        if (subGroups.Count == 1 && subGroups.First().Value.Tests.Count == remaining.Count)
+        Console.WriteLine("Isolation complete.");
+        Console.WriteLine($"Batches: {results.Count}, Passed: {passedGroups}, Failed: {failingGroups.Count}, Hung: {hangingGroups.Count}");
+
+        if (hangingGroups.Count > 0)
         {
-            // Can't split further by namespace, split by count
-            var half = remaining.Count / 2;
-            var firstHalf = remaining.Take(half).ToList();
-            var secondHalf = remaining.Skip(half).ToList();
-
-            Console.WriteLine($"{indent}  Splitting {remaining.Count} tests into two halves...");
-
-            // Test first half
-            var firstResult = await TestSubsetAsync(firstHalf, depth + 1);
-            hangingTests.AddRange(firstResult);
-
-            // Test second half
-            var secondResult = await TestSubsetAsync(secondHalf, depth + 1);
-            hangingTests.AddRange(secondResult);
-        }
-        else
-        {
-            foreach (var (subNormalized, (subOriginal, subTests)) in subGroups.OrderBy(g => g.Key))
+            Console.WriteLine();
+            Console.WriteLine("Hanging groups:");
+            foreach (var group in hangingGroups)
             {
-                if (IsGroupCompleted(subNormalized))
-                    continue;
-
-                var result = await DrillDownAsync(subNormalized, subOriginal, subTests, depth + 1);
-                hangingTests.AddRange(result);
+                Console.WriteLine($"  ⏱ {group.Label}");
             }
         }
 
-        return hangingTests;
+        if (failingGroups.Count > 0)
+        {
+            Console.WriteLine();
+            Console.WriteLine("Failing groups:");
+            foreach (var group in failingGroups)
+            {
+                Console.WriteLine($"  ✗ {group.Label}");
+            }
+        }
+
+        return hangingGroups.Count == 0 && failingGroups.Count == 0 ? 0 : 1;
     }
 
-    private async Task<List<string>> TestSubsetAsync(List<string> tests, int depth)
+    private List<TestBatch> BuildTestBatches(TestTreeNode root)
     {
-        var indent = new string(' ', depth * 2);
-        var hangingTests = new List<string>();
+        // Find maximal nodes under limit
+        var eligibleNodes = new List<TestTreeNode>();
+        CollectEligibleNodes(root, parentOverLimit: true, eligibleNodes);
 
-        if (tests.Count == 0) return hangingTests;
-
-        if (tests.Count == 1)
+        // Fallback: if nothing qualified (e.g., every leaf > Max), use smallest leaves
+        if (eligibleNodes.Count == 0)
         {
-            var (_, singleHung) = await RunTestsAsync(tests[0]);
-            if (singleHung)
+            eligibleNodes.AddRange(GetLeaves(root).OrderBy(n => n.TotalTestCount));
+        }
+
+        // Combine prefixes until total tests <= MaxTestsPerBatch
+        var batches = new List<TestBatch>();
+        var currentNodes = new List<TestTreeNode>();
+        var currentTests = new List<string>();
+        var currentCount = 0;
+
+        foreach (var node in eligibleNodes)
+        {
+            var nodeTests = TestTree.GetAllTests(node);
+            if (currentCount + nodeTests.Count > MaxTestsPerBatch && currentNodes.Count > 0)
             {
-                Console.WriteLine($"{indent}⏱ HANGS: {tests[0]}");
-                hangingTests.Add(tests[0]);
+                batches.Add(BuildCombinedBatch(currentNodes, currentTests));
+                currentNodes.Clear();
+                currentTests.Clear();
+                currentCount = 0;
             }
-            return hangingTests;
+
+            currentNodes.Add(node);
+            currentTests.AddRange(nodeTests);
+            currentCount += nodeTests.Count;
         }
 
-        // Build a filter for this subset
-        var filter = string.Join("|", tests.Select(t => $"FullyQualifiedName={EscapeFilterValue(t)}"));
-
-        // If filter is too long, fall back to running one by one
-        if (filter.Length > 8000)
+        if (currentNodes.Count > 0)
         {
-            Console.WriteLine($"{indent}Filter too long, testing {tests.Count} tests one by one...");
-            foreach (var test in tests)
-            {
-                var (_, testHung) = await RunTestsAsync(test);
-                if (testHung)
-                {
-                    Console.WriteLine($"{indent}⏱ HANGS: {test}");
-                    hangingTests.Add(test);
-                }
-            }
-            return hangingTests;
+            batches.Add(BuildCombinedBatch(currentNodes, currentTests));
         }
 
-        var (passed, hung) = await RunTestsWithRawFilterAsync(filter);
+        return batches;
+    }
 
-        if (!hung)
+    private static TestBatch BuildCombinedBatch(List<TestTreeNode> nodes, List<string> tests)
+    {
+        var prefixes = nodes
+            .Select(GetFilterForNode)
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Select(p => p!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var label = nodes.Count == 1
+            ? GetNodeLabel(nodes[0])
+            : $"{nodes.Count} branches ({tests.Count} tests)";
+
+        return new TestBatch(label, new List<string>(tests), prefixes);
+    }
+
+    private void CollectEligibleNodes(TestTreeNode node, bool parentOverLimit, List<TestTreeNode> eligible)
+    {
+        var overLimit = node.TotalTestCount > MaxTestsPerBatch;
+
+        // Select node if it fits and parent was too big (maximal under-the-limit node)
+        if (!overLimit && parentOverLimit)
         {
-            return hangingTests;
+            eligible.Add(node);
+            return;
         }
 
-        // Hang in this subset, drill down further
-        var remaining = tests.Where(t => !passed.Contains(t)).ToList();
-
-        if (remaining.Count <= 3)
+        foreach (var child in node.Children.OrderBy(c => c.Name))
         {
-            foreach (var test in remaining)
-            {
-                var (_, testHung) = await RunTestsAsync(test);
-                if (testHung)
-                {
-                    Console.WriteLine($"{indent}⏱ HANGS: {test}");
-                    hangingTests.Add(test);
-                }
-            }
+            CollectEligibleNodes(child, overLimit, eligible);
         }
+    }
+
+    private static IEnumerable<TestTreeNode> GetLeaves(TestTreeNode node)
+    {
+        if (node.Children.Count == 0)
+            yield return node;
         else
         {
-            var half = remaining.Count / 2;
-            hangingTests.AddRange(await TestSubsetAsync(remaining.Take(half).ToList(), depth + 1));
-            hangingTests.AddRange(await TestSubsetAsync(remaining.Skip(half).ToList(), depth + 1));
+            foreach (var child in node.Children)
+            {
+                foreach (var leaf in GetLeaves(child))
+                    yield return leaf;
+            }
+        }
+    }
+
+    private static string GetNodeLabel(TestTreeNode node)
+    {
+        return string.IsNullOrWhiteSpace(node.FullPath)
+            ? "All Tests"
+            : node.FullPath;
+    }
+
+    private static string? GetFilterForNode(TestTreeNode node)
+    {
+        return string.IsNullOrWhiteSpace(node.FullPath) ? null : node.FullPath;
+    }
+
+    private async Task<BatchRunResult> RunBatchAsync(TestBatch batch)
+    {
+        if (batch.Tests.Count == 0)
+        {
+            return new BatchRunResult(batch.Label, 0, [], [], [], 0, false, false, "No tests to run");
         }
 
-        return hangingTests;
+        var tempDir = Path.Combine(Path.GetTempPath(), $"testrunner_isolate_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+
+        try
+        {
+            var args = _baseTestArgs.ToList();
+            RemoveFilterArgs(args);
+            EnsureReleaseConfiguration(args);
+            AddNoBuild(args);
+
+            args.Add("--logger");
+            args.Add("trx");
+            args.Add("--results-directory");
+            args.Add(tempDir);
+
+            if (_timeoutSeconds > 0)
+            {
+                args.Add("--blame-hang");
+                args.Add("--blame-hang-timeout");
+                args.Add($"{_timeoutSeconds}s");
+            }
+
+            var filter = BuildFilter(batch);
+            if (!string.IsNullOrWhiteSpace(filter))
+            {
+                args.Add("--filter");
+                args.Add(filter);
+            }
+
+            var batchTimeoutSeconds = _timeoutSeconds > 0
+                ? Math.Max(_timeoutSeconds * 2, 120) // 2x per-test timeout, at least 2 minutes
+                : 180; // default guardrail when hang detection disabled
+
+            var idleTimeoutSeconds = Math.Max(batchTimeoutSeconds / 2, 90); // kill if no output for too long
+
+            (int exitCode, bool killedByGuard, string? guardReason) = await RunDotnetProcessAsync(
+                args,
+                batchTimeoutSeconds,
+                idleTimeoutSeconds,
+                line =>
+                {
+                    if (IsInterestingOutput(line))
+                        Console.WriteLine($"    {line}");
+                });
+
+            var results = Directory.GetFiles(tempDir, "*.trx", SearchOption.AllDirectories)
+                .Select(TrxParser.ParseTrxFile)
+                .Where(r => r != null)
+                .ToList();
+
+            string? reason = null;
+            var passed = new HashSet<string>(results.SelectMany(r => r!.PassedTests));
+            var failed = new HashSet<string>(results.SelectMany(r => r!.FailedTests));
+            var timedOut = new HashSet<string>(results.SelectMany(r => r!.TimedOutTests));
+
+            var hung = timedOut.Count > 0 || DetectHangArtifacts(tempDir);
+            if (killedByGuard)
+            {
+                hung = true;
+                if (reason == null)
+                    reason = guardReason ?? "Batch terminated by guard";
+            }
+
+            var hadResults = results.Count > 0;
+
+            if (!hadResults)
+            {
+                reason = exitCode != 0
+                    ? $"dotnet test exited {exitCode} with no results (filter mismatch?)"
+                    : "dotnet test produced no results";
+            }
+            else if (exitCode != 0 && failed.Count == 0 && timedOut.Count == 0)
+            {
+                reason = $"exit code {exitCode} despite no failed/hanging tests";
+            }
+
+            return new BatchRunResult(batch.Label, batch.Tests.Count, passed, failed, timedOut, exitCode, hung, hadResults, reason);
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, true); } catch { }
+        }
+    }
+
+    private static void RemoveFilterArgs(List<string> args)
+    {
+        for (var i = 0; i < args.Count; i++)
+        {
+            var arg = args[i];
+            if (arg.Equals("--filter", StringComparison.OrdinalIgnoreCase))
+            {
+                if (i + 1 < args.Count)
+                {
+                    args.RemoveAt(i + 1);
+                }
+
+                args.RemoveAt(i);
+                i--;
+            }
+            else if (arg.StartsWith("--filter", StringComparison.OrdinalIgnoreCase))
+            {
+                args.RemoveAt(i);
+                i--;
+            }
+        }
+    }
+
+    private static void AddNoBuild(List<string> args)
+    {
+        if (args.Any(a => a.Equals("--no-build", StringComparison.OrdinalIgnoreCase)))
+            return;
+
+        args.Add("--no-build");
+    }
+
+    private static string? BuildFilter(TestBatch batch)
+    {
+        if (batch.FilterPrefixes.Count == 0)
+            return null;
+
+        var clauses = batch.FilterPrefixes
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Select(p => $"FullyQualifiedName~{EscapeFilterValue(p!)}")
+            .ToList();
+
+        if (clauses.Count == 0)
+            return null;
+
+        return string.Join("|", clauses);
+    }
+
+    private static bool IsInterestingOutput(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+            return false;
+
+        var lower = line.ToLowerInvariant();
+        return lower.Contains("passed") ||
+               lower.Contains("failed") ||
+               lower.Contains("skipped") ||
+               lower.Contains("starting test execution") ||
+               lower.Contains("total tests") ||
+               lower.StartsWith("test run for", StringComparison.OrdinalIgnoreCase) ||
+               lower.Contains("discovering") ||
+               lower.Contains("results file") ||
+               lower.Contains("starting test");
+    }
+
+    private bool NeedsDotnetTest()
+    {
+        if (_baseTestArgs.Length == 0)
+            return false;
+
+        var first = _baseTestArgs[0].ToLowerInvariant();
+        if (first != "dotnet")
+            return false;
+
+        return _baseTestArgs.Skip(1).Any(a => a.Equals("test", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private async Task<bool> EnsurePrebuiltAsync()
+    {
+        try
+        {
+            var buildArgs = _baseTestArgs.ToList();
+            RemoveFilterArgs(buildArgs);
+            CleanBuildOnlyArgs(buildArgs);
+            EnsureReleaseConfiguration(buildArgs);
+
+            // Replace the first "test" with "build"
+            for (var i = 0; i < buildArgs.Count; i++)
+            {
+                if (buildArgs[i].Equals("test", StringComparison.OrdinalIgnoreCase))
+                {
+                    buildArgs[i] = "build";
+                    break;
+                }
+            }
+
+            // Remove dotnet if present; RunDotnetProcessAsync expects args without leading dotnet
+            if (buildArgs.Count > 0 && buildArgs[0].Equals("dotnet", StringComparison.OrdinalIgnoreCase))
+            {
+                buildArgs = buildArgs.Skip(1).ToList();
+            }
+
+            Console.WriteLine("Prebuilding tests once (Release)...");
+            var (exitCode, _, _) = await RunDotnetProcessAsync(buildArgs);
+            if (exitCode != 0)
+            {
+                Console.WriteLine($"Prebuild failed with exit code {exitCode}");
+                return false;
+            }
+
+            Console.WriteLine("Prebuild completed.");
+            Console.WriteLine();
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static void CleanBuildOnlyArgs(List<string> args)
+    {
+        for (var i = 0; i < args.Count; i++)
+        {
+            var arg = args[i];
+            if (arg.Equals("--no-build", StringComparison.OrdinalIgnoreCase) ||
+                arg.Equals("--blame-hang", StringComparison.OrdinalIgnoreCase) ||
+                arg.Equals("--logger", StringComparison.OrdinalIgnoreCase) ||
+                arg.Equals("-l", StringComparison.OrdinalIgnoreCase))
+            {
+                args.RemoveAt(i);
+                i--;
+                continue;
+            }
+
+            if (arg.Equals("--results-directory", StringComparison.OrdinalIgnoreCase) ||
+                arg.Equals("-r", StringComparison.OrdinalIgnoreCase) ||
+                arg.Equals("--blame-hang-timeout", StringComparison.OrdinalIgnoreCase))
+            {
+                if (i + 1 < args.Count)
+                {
+                    args.RemoveAt(i + 1);
+                }
+                args.RemoveAt(i);
+                i--;
+            }
+        }
+    }
+
+    private static void EnsureReleaseConfiguration(List<string> args)
+    {
+        var hasConfig = args.Any(a =>
+            a.Equals("-c", StringComparison.OrdinalIgnoreCase) ||
+            a.Equals("--configuration", StringComparison.OrdinalIgnoreCase));
+
+        if (hasConfig)
+            return;
+
+        args.Add("--configuration");
+        args.Add("Release");
+    }
+
+    private static bool DetectHangArtifacts(string tempDir)
+    {
+        var sequenceFiles = Directory.GetFiles(tempDir, "Sequence_*.xml", SearchOption.AllDirectories);
+        if (sequenceFiles.Length > 0)
+        {
+            return true;
+        }
+
+        var hangDumps = Directory.GetFiles(tempDir, "*_hangdump*", SearchOption.AllDirectories);
+        return hangDumps.Length > 0;
     }
 
     private static string EscapeFilterValue(string value)
     {
-        // Escape special characters in filter values
         return value.Replace("(", "\\(").Replace(")", "\\)");
-    }
-
-    private Dictionary<string, (string OriginalPrefix, List<string> Tests)> GroupByNamespaceLevel(List<string> tests, int level)
-    {
-        var groups = new Dictionary<string, (string OriginalPrefix, List<string> Tests)>();
-
-        foreach (var test in tests)
-        {
-            // Split on . and _ to handle various naming conventions
-            var parts = GetTestNameParts(test);
-            var normalizedPrefix = string.Join(".", parts.Take(Math.Min(level + 1, parts.Length)));
-
-            if (!groups.ContainsKey(normalizedPrefix))
-            {
-                // Get the original prefix from the first test (preserving original separators)
-                var originalPrefix = GetOriginalPrefix(test, level + 1);
-                groups[normalizedPrefix] = (originalPrefix, []);
-            }
-
-            groups[normalizedPrefix].Tests.Add(test);
-        }
-
-        return groups;
-    }
-
-    private static readonly char[] NameSeparators = ['.', '_', ','];
-
-    private static string GetTestBaseName(string testName)
-    {
-        // Strip parameters: "Namespace.Class.Method(param1, param2)" -> "Namespace.Class.Method"
-        var parenIndex = testName.IndexOf('(');
-        return parenIndex > 0 ? testName[..parenIndex] : testName;
-    }
-
-    private static string[] GetTestNameParts(string testName)
-    {
-        // Strip parameters first
-        var baseName = GetTestBaseName(testName);
-        // Split on . and _ to handle both "Namespace.Class.Method" and "Array_includes_length"
-        return baseName.Split(NameSeparators, StringSplitOptions.RemoveEmptyEntries);
-    }
-
-    private static string GetOriginalPrefix(string testName, int partCount)
-    {
-        // Get the original prefix from the test name (preserving original separators)
-        // For "Array_includes_length(...)" with partCount=2, returns "Array_includes"
-        var baseName = GetTestBaseName(testName);
-        var separatorCount = 0;
-
-        for (var i = 0; i < baseName.Length; i++)
-        {
-            if (NameSeparators.Contains(baseName[i]))
-            {
-                separatorCount++;
-                if (separatorCount >= partCount)
-                {
-                    return baseName[..i];
-                }
-            }
-        }
-
-        return baseName; // Return full base name if not enough separators
-    }
-
-    private void MarkCompletedPrefixes(List<string> allTests, HashSet<string> passed)
-    {
-        // Group all tests by namespace prefixes at each level
-        // Mark a prefix as complete if ALL tests under it passed
-
-        var testsByPrefix = new Dictionary<string, HashSet<string>>();
-        var passedByPrefix = new Dictionary<string, HashSet<string>>();
-
-        foreach (var test in allTests)
-        {
-            var parts = GetTestNameParts(test);
-            for (var i = 1; i <= parts.Length; i++)
-            {
-                var prefix = string.Join(".", parts.Take(i));
-                if (!testsByPrefix.ContainsKey(prefix))
-                    testsByPrefix[prefix] = [];
-                testsByPrefix[prefix].Add(test);
-            }
-        }
-
-        foreach (var test in passed)
-        {
-            var parts = GetTestNameParts(test);
-            for (var i = 1; i <= parts.Length; i++)
-            {
-                var prefix = string.Join(".", parts.Take(i));
-                if (!passedByPrefix.ContainsKey(prefix))
-                    passedByPrefix[prefix] = [];
-                passedByPrefix[prefix].Add(test);
-            }
-        }
-
-        foreach (var (prefix, allInPrefix) in testsByPrefix)
-        {
-            if (passedByPrefix.TryGetValue(prefix, out var passedInPrefix))
-            {
-                if (passedInPrefix.Count == allInPrefix.Count)
-                {
-                    _completedPrefixes.Add(prefix);
-                }
-            }
-        }
-    }
-
-    private bool IsGroupCompleted(string prefix)
-    {
-        return _completedPrefixes.Contains(prefix);
     }
 
     private async Task<List<string>> ListTestsAsync(string? filter)
@@ -396,11 +531,8 @@ public class IsolateRunner
         var args = _baseTestArgs.ToList();
         args.Add("--list-tests");
 
-        if (filter != null)
-        {
-            args.Add("--filter");
-            args.Add($"FullyQualifiedName~{filter}");
-        }
+        // Don't pass filter to dotnet test --list-tests (it ignores it anyway)
+        // We'll filter locally instead
 
         var output = await RunDotnetAsync(args, captureOutput: true, timeout: 120);
 
@@ -422,94 +554,13 @@ public class IsolateRunner
             }
         }
 
+        // Filter locally if a filter is specified
+        if (filter != null)
+        {
+            tests = tests.Where(t => t.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+
         return tests;
-    }
-
-    private async Task<(HashSet<string> Passed, bool Hung)> RunTestsAsync(string? filter)
-    {
-        var tempDir = Path.Combine(Path.GetTempPath(), $"testrunner_isolate_{Guid.NewGuid():N}");
-        Directory.CreateDirectory(tempDir);
-
-        try
-        {
-            var args = _baseTestArgs.ToList();
-            args.Add("--logger");
-            args.Add("trx");
-            args.Add("--results-directory");
-            args.Add(tempDir);
-            args.Add("--blame-hang");
-            args.Add("--blame-hang-timeout");
-            args.Add($"{_timeoutSeconds}s");
-
-            if (filter != null)
-            {
-                args.Add("--filter");
-                args.Add($"FullyQualifiedName~{filter}");
-            }
-
-            var exitCode = await RunDotnetProcessAsync(args);
-            var hung = exitCode != 0;
-
-            // Parse TRX for passed tests
-            var passed = new HashSet<string>();
-            var trxFiles = Directory.GetFiles(tempDir, "*.trx", SearchOption.AllDirectories);
-            foreach (var trx in trxFiles)
-            {
-                var result = TrxParser.ParseTrxFile(trx);
-                if (result != null)
-                {
-                    foreach (var test in result.PassedTests)
-                        passed.Add(test);
-                }
-            }
-
-            return (passed, hung);
-        }
-        finally
-        {
-            try { Directory.Delete(tempDir, true); } catch { }
-        }
-    }
-
-    private async Task<(HashSet<string> Passed, bool Hung)> RunTestsWithRawFilterAsync(string rawFilter)
-    {
-        var tempDir = Path.Combine(Path.GetTempPath(), $"testrunner_isolate_{Guid.NewGuid():N}");
-        Directory.CreateDirectory(tempDir);
-
-        try
-        {
-            var args = _baseTestArgs.ToList();
-            args.Add("--logger");
-            args.Add("trx");
-            args.Add("--results-directory");
-            args.Add(tempDir);
-            args.Add("--blame-hang");
-            args.Add("--blame-hang-timeout");
-            args.Add($"{_timeoutSeconds}s");
-            args.Add("--filter");
-            args.Add(rawFilter);
-
-            var exitCode = await RunDotnetProcessAsync(args);
-            var hung = exitCode != 0;
-
-            var passed = new HashSet<string>();
-            var trxFiles = Directory.GetFiles(tempDir, "*.trx", SearchOption.AllDirectories);
-            foreach (var trx in trxFiles)
-            {
-                var result = TrxParser.ParseTrxFile(trx);
-                if (result != null)
-                {
-                    foreach (var test in result.PassedTests)
-                        passed.Add(test);
-                }
-            }
-
-            return (passed, hung);
-        }
-        finally
-        {
-            try { Directory.Delete(tempDir, true); } catch { }
-        }
     }
 
     private async Task<string> RunDotnetAsync(List<string> args, bool captureOutput, int timeout)
@@ -557,7 +608,12 @@ public class IsolateRunner
         return output.ToString();
     }
 
-    private async Task<int> RunDotnetProcessAsync(List<string> args)
+    private async Task<(int ExitCode, bool KilledByGuard, string? GuardReason)> RunDotnetProcessAsync(
+        List<string> args,
+        int? killAfterSeconds = null,
+        int? idleKillSeconds = null,
+        Action<string>? progressLogger = null,
+        int heartbeatSeconds = 30)
     {
         var executable = "dotnet";
         var commandArgs = args.ToArray();
@@ -579,15 +635,73 @@ public class IsolateRunner
 
         using var process = new Process { StartInfo = startInfo };
 
-        // Suppress output during isolation runs
-        process.OutputDataReceived += (_, _) => { };
-        process.ErrorDataReceived += (_, _) => { };
+        var lastOutput = DateTime.UtcNow;
+        process.OutputDataReceived += (_, e) =>
+        {
+            // Suppress console noise but track liveness
+            if (e.Data != null)
+            {
+                progressLogger?.Invoke(e.Data);
+                lastOutput = DateTime.UtcNow;
+            }
+        };
+        process.ErrorDataReceived += (_, e) =>
+        {
+            if (e.Data != null)
+            {
+                progressLogger?.Invoke(e.Data);
+                lastOutput = DateTime.UtcNow;
+            }
+        };
 
         process.Start();
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
 
-        await process.WaitForExitAsync();
-        return process.ExitCode;
+        var killedByGuard = false;
+        string? guardReason = null;
+        var overallStopwatch = Stopwatch.StartNew();
+        var lastHeartbeat = DateTime.UtcNow;
+
+        while (!process.HasExited)
+        {
+            await Task.Delay(500);
+
+            if (!killAfterSeconds.HasValue && !idleKillSeconds.HasValue)
+                continue;
+
+            if (killAfterSeconds.HasValue && overallStopwatch.Elapsed.TotalSeconds > killAfterSeconds.Value)
+            {
+                guardReason = $"Batch exceeded {killAfterSeconds.Value}s and was terminated";
+                break;
+            }
+
+            if (idleKillSeconds.HasValue &&
+                (DateTime.UtcNow - lastOutput).TotalSeconds > idleKillSeconds.Value)
+            {
+                guardReason = $"No test output for {idleKillSeconds.Value}s; batch terminated";
+                break;
+            }
+
+            if (progressLogger != null &&
+                heartbeatSeconds > 0 &&
+                (DateTime.UtcNow - lastHeartbeat).TotalSeconds > heartbeatSeconds)
+            {
+                progressLogger($"... still running ({overallStopwatch.Elapsed:mm\\:ss}), last output {(DateTime.UtcNow - lastOutput).TotalSeconds:F0}s ago");
+                lastHeartbeat = DateTime.UtcNow;
+            }
+        }
+
+        if (guardReason != null && !process.HasExited)
+        {
+            try { process.Kill(true); } catch { }
+            killedByGuard = true;
+        }
+        else
+        {
+            await process.WaitForExitAsync();
+        }
+
+        return (process.ExitCode, killedByGuard, guardReason);
     }
 }

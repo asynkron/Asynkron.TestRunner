@@ -14,6 +14,8 @@ A .NET global tool that wraps `dotnet test`, captures TRX results, tracks test h
 - Detects fixes (tests that failed before but now pass)
 - Supports color and non-color (CI/piped) output modes
 - Default 20s per-test timeout (detects and reports hung tests)
+- **Automatic hang isolation** - when a hang is detected, automatically drills down to find the culprit
+- Displays test hierarchy tree using Spectre.Console for better visualization
 - Easy filter syntax for running specific tests
 
 ## Installation
@@ -67,20 +69,28 @@ testrunner stats -- dotnet test ./tests/MyTests     # Specific command history
 testrunner stats --history 5                        # Last 5 runs
 ```
 
-### Isolate hanging tests
+### Automatic hang isolation
+
+When a test hang is detected during a normal run, testrunner **automatically** isolates and finds the hanging test:
+
+```bash
+testrunner "MyTests"                # If hang detected, auto-isolates
+```
+
+The isolation process:
+1. Displays a tree of all matching tests
+2. Breaks the tree into branches with fewer than 100 leaf tests (or the full tree if smaller)
+3. Runs each branch separately with the hang timeout and reports failing or hanging branches
+
+### Manual isolate command
+
+You can also manually trigger isolation:
 
 ```bash
 testrunner isolate                  # Find hanging test in all tests
-testrunner isolate "LanguageTests"  # Find within matching tests
+testrunner isolate "language"       # Find within tests matching 'language'
 testrunner isolate --timeout 60     # Use 60s timeout (default: 30s)
 ```
-
-The isolate command:
-1. Runs all tests to detect a hang
-2. Groups tests by namespace hierarchy
-3. Runs each group in isolation
-4. Drills down into hanging groups
-5. Reports the specific hanging test(s)
 
 ### View regressions
 

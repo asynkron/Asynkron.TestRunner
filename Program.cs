@@ -41,7 +41,7 @@ static async Task<int> RunAsync(string[] args)
         var isolateFilter = args.Length > 1 && !args[1].StartsWith("-") && args[1] != "--" ? args[1] : null;
         var isolateTimeout = ParseIsolateTimeout(args) ?? 30;
         var isolateTestArgs = ExtractTestArgs(args, 1) ?? ["dotnet", "test"];
-        var isolateRunner = new IsolateRunner(isolateTestArgs, isolateTimeout);
+        var isolateRunner = new IsolateRunner(isolateTestArgs, isolateTimeout, isolateFilter);
         return await isolateRunner.RunAsync(isolateFilter);
     }
 
@@ -107,7 +107,7 @@ static async Task<int> RunAsync(string[] args)
     }
 
     var store = new ResultStore(testArgs);
-    var runner = new TestRunner(store, timeout);
+    var runner = new TestRunner(store, timeout, filter);
     return await runner.RunTestsAsync(testArgs);
 }
 

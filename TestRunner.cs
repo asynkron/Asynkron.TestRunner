@@ -9,11 +9,13 @@ public class TestRunner
 
     private readonly ResultStore _store;
     private readonly int _timeoutSeconds;
+    private readonly string? _filter;
 
-    public TestRunner(ResultStore store, int? timeoutSeconds = null)
+    public TestRunner(ResultStore store, int? timeoutSeconds = null, string? filter = null)
     {
         _store = store;
         _timeoutSeconds = timeoutSeconds ?? DefaultTimeoutSeconds;
+        _filter = filter;
     }
 
     public async Task<int> RunTestsAsync(string[] args)
@@ -98,7 +100,75 @@ public class TestRunner
         // Output timeout info for AI agents and users
         Console.WriteLine($"[testrunner] Per-test timeout: {_timeoutSeconds}s (use --timeout <seconds> to change)");
 
+        // If hang detected (blame-hang triggered), automatically isolate to find the culprit
+        if (process.ExitCode != 0 && _timeoutSeconds > 0 && result != null)
+        {
+            // Check if the hang occurred (blame-hang would cause exit without all tests completing)
+            var expectedHang = DetectHang(result, resultsDir);
+            if (expectedHang)
+            {
+                Console.WriteLine();
+                Console.WriteLine("════════════════════════════════════════════════════════════════");
+                Console.WriteLine("HANG DETECTED - Automatically isolating to find hanging test(s)");
+                Console.WriteLine("════════════════════════════════════════════════════════════════");
+                Console.WriteLine();
+
+                // Extract base test args (remove our injected options)
+                var baseArgs = ExtractBaseTestArgs(args);
+                var isolateRunner = new IsolateRunner(baseArgs, _timeoutSeconds, _filter);
+                await isolateRunner.RunAsync(_filter);
+            }
+        }
+
         return process.ExitCode;
+    }
+
+    private static bool DetectHang(TestRunResult result, string resultsDir)
+    {
+        // Look for blame-hang sequence file which indicates a hang was detected
+        var sequenceFiles = Directory.GetFiles(resultsDir, "Sequence_*.xml", SearchOption.AllDirectories);
+        if (sequenceFiles.Length > 0)
+            return true;
+
+        // Also check for hang dump files
+        var hangDumps = Directory.GetFiles(resultsDir, "*_hangdump*", SearchOption.AllDirectories);
+        return hangDumps.Length > 0;
+    }
+
+    private static string[] ExtractBaseTestArgs(string[] args)
+    {
+        // Remove our injected args (--logger, --results-directory, --blame-hang, etc.)
+        var result = new List<string>();
+        var skipNext = false;
+
+        foreach (var arg in args)
+        {
+            if (skipNext)
+            {
+                skipNext = false;
+                continue;
+            }
+
+            if (arg.StartsWith("--logger", StringComparison.OrdinalIgnoreCase) ||
+                arg.StartsWith("--results-directory", StringComparison.OrdinalIgnoreCase) ||
+                arg.StartsWith("-r", StringComparison.OrdinalIgnoreCase) ||
+                arg.StartsWith("--blame-hang", StringComparison.OrdinalIgnoreCase))
+            {
+                // Skip this arg and potentially its value
+                if (arg.Equals("--logger", StringComparison.OrdinalIgnoreCase) ||
+                    arg.Equals("--results-directory", StringComparison.OrdinalIgnoreCase) ||
+                    arg.Equals("-r", StringComparison.OrdinalIgnoreCase) ||
+                    arg.Equals("--blame-hang-timeout", StringComparison.OrdinalIgnoreCase))
+                {
+                    skipNext = true;
+                }
+                continue;
+            }
+
+            result.Add(arg);
+        }
+
+        return result.ToArray();
     }
 
     private static string[] BuildArgs(string[] args, string resultsDir, int timeoutSeconds)
