@@ -142,19 +142,77 @@ public static class TrxParser
         if (results.Count == 0)
             return null;
 
-        // Combine results
+        return MergeResults(results!);
+    }
+
+    /// <summary>
+    /// Merges multiple test run results into a single result.
+    /// Handles duplicates and test retries (if a test passes after failing, it's counted as passed).
+    /// </summary>
+    public static TestRunResult MergeResults(IEnumerable<TestRunResult> results)
+    {
+        var resultsList = results.ToList();
+        if (resultsList.Count == 0)
+            throw new ArgumentException("No results to merge", nameof(results));
+
+        if (resultsList.Count == 1)
+            return resultsList[0];
+
+        // Use dictionaries to track the final state of each test
+        // Priority: Passed > Failed > TimedOut (if a test ever passes, it's passed)
+        var testStates = new Dictionary<string, TestOutcome>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var result in resultsList)
+        {
+            // Process passed tests (highest priority - if a test passes at any point, it's passed)
+            foreach (var test in result.PassedTests)
+            {
+                testStates[test] = TestOutcome.Passed;
+            }
+
+            // Process failed tests (only if not already passed)
+            foreach (var test in result.FailedTests)
+            {
+                if (!testStates.TryGetValue(test, out var existing) || existing != TestOutcome.Passed)
+                {
+                    testStates[test] = TestOutcome.Failed;
+                }
+            }
+
+            // Process timed out tests (lowest priority)
+            foreach (var test in result.TimedOutTests)
+            {
+                if (!testStates.ContainsKey(test))
+                {
+                    testStates[test] = TestOutcome.TimedOut;
+                }
+            }
+        }
+
+        // Build final lists
+        var passedTests = testStates.Where(kv => kv.Value == TestOutcome.Passed).Select(kv => kv.Key).ToList();
+        var failedTests = testStates.Where(kv => kv.Value == TestOutcome.Failed).Select(kv => kv.Key).ToList();
+        var timedOutTests = testStates.Where(kv => kv.Value == TestOutcome.TimedOut).Select(kv => kv.Key).ToList();
+
         return new TestRunResult
         {
             Id = Guid.NewGuid().ToString("N")[..8],
-            Timestamp = results.Min(r => r!.Timestamp),
-            Passed = results.Sum(r => r!.Passed),
-            Failed = results.Sum(r => r!.Failed),
-            Skipped = results.Sum(r => r!.Skipped),
-            Duration = TimeSpan.FromTicks(results.Max(r => r!.Duration.Ticks)),
-            TrxFilePath = trxDirectory,
-            PassedTests = results.SelectMany(r => r!.PassedTests).ToList(),
-            FailedTests = results.SelectMany(r => r!.FailedTests).ToList(),
-            TimedOutTests = results.SelectMany(r => r!.TimedOutTests).ToList()
+            Timestamp = resultsList.Min(r => r.Timestamp),
+            Passed = passedTests.Count,
+            Failed = failedTests.Count,
+            Skipped = resultsList.Sum(r => r.Skipped), // Skipped can be summed if unique
+            Duration = TimeSpan.FromTicks(resultsList.Max(r => r.Duration.Ticks)),
+            TrxFilePath = resultsList[0].TrxFilePath,
+            PassedTests = passedTests,
+            FailedTests = failedTests,
+            TimedOutTests = timedOutTests
         };
+    }
+
+    private enum TestOutcome
+    {
+        Passed,
+        Failed,
+        TimedOut
     }
 }

@@ -98,4 +98,14 @@ eventually, there will be only single hanging tests left. which we can present t
     - Configuration Options table (timeout, isolate options)
     - Filter pattern examples
   - Help text in Program.cs already comprehensive
-- [ ] Ensure we can merge TRX results from multiple runs effectively
+- [x] Ensure we can merge TRX results from multiple runs effectively
+  - Enhanced `TrxParser.MergeResults()` method to properly merge multiple TRX results:
+    - Deduplicates test names (case-insensitive)
+    - Handles test retries: if a test passes in any run, it's counted as passed
+    - Priority: Passed > Failed > TimedOut
+    - Takes earliest timestamp and longest duration
+  - Added 9 new unit tests for merge scenarios:
+    - Deduplication, passed overrides failed/timed out on retry
+    - Failed overrides timed out, case-insensitivity
+    - Duration and timestamp handling
+  - All 66 tests pass
