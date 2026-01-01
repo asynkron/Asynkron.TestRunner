@@ -33,9 +33,51 @@ eventually, there will be only single hanging tests left. which we can present t
   - Updated `.github/workflows/ci.yml` to use solution file and run tests
   - Updated `.github/workflows/pack.yml` to run tests before publishing and use new project path
 
-- [ ] Implement recursive test runs to isolate hanging tests
-- [ ] Improve logging and reporting of test results
-- [ ] Explore timeout strategies for individual tests
+- [x] Implement recursive test runs to isolate hanging tests
+  - Added `DrillDownHangingBatchAsync` method in `IsolateRunner.cs` that recursively drills into hanging batches
+  - Added `FindNodeByPath` to `TestTree.cs` for navigating to specific tree nodes by full path
+  - Added `BuildChildBatches` to create batches from child nodes of a hanging batch
+  - Added tracking via `_isolatedHangingTests` list and `_completedBatches` set to avoid re-running
+  - Algorithm: When a batch hangs, the driller:
+    1. Finds the tree node(s) corresponding to the hanging batch
+    2. Creates child batches from the node's children
+    3. Runs each child batch:
+       - If it passes, the branch is clean and skipped
+       - If it hangs with a single test, that test is isolated
+       - If it hangs with multiple tests, recursively drill deeper
+    4. Eventually isolates individual hanging tests
+  - Added `MaxRecursionDepth = 10` to prevent infinite recursion
+  - Added 7 new unit tests for `FindNodeByPath` in `TestTreeTests.cs`
+  - All 36 tests pass
+- [x] Improve logging and reporting of test results
+  - Added `RenderIsolationSummary` to `ChartRenderer.cs` for clean isolation summary output
+  - Added `RenderDrillProgress` to show progress during recursive drilling with status icons
+  - Added `ExportSummary` to write test results to a file
+  - Added `IsolationResult` record type for returning detailed isolation results
+  - Added `RunWithResultAsync` method that returns `IsolationResult` with:
+    - List of isolated hanging tests
+    - List of failed batches
+    - Total/passed batch counts
+    - Total duration
+  - Added `IsolatedHangingTests` and `FailedBatches` public properties on `IsolateRunner`
+- [x] Explore timeout strategies for individual tests
+  - Created `TimeoutStrategy.cs` with 4 timeout modes:
+    - **Fixed**: Constant timeout for all tests (default: 20s)
+    - **Adaptive**: Timeout based on historical test durations (median * 3x multiplier)
+    - **Graduated**: Timeout that doubles on retries (10s → 20s → 40s)
+    - **None**: No timeout (tests run until completion)
+  - Added `TimeoutMode` enum and `TimeoutStrategy` class with:
+    - `GetTimeout(attemptNumber)`: Get timeout for a specific attempt
+    - `GetBatchTimeout(testCount, attemptNumber)`: Calculate batch timeout based on test count
+    - `FromOptions(mode, timeoutSeconds, store)`: Parse from CLI options
+    - `GetDescription()`: Human-readable description
+  - Integrated with `IsolateRunner`:
+    - Updated constructor to accept `TimeoutStrategy` (backward compatible with int)
+    - Uses `GetBatchTimeout()` for batch timeouts
+    - Increments attempt counter during recursive drilling for graduated timeouts
+    - Shows timeout description in output
+  - Added 14 new unit tests in `TimeoutStrategyTests.cs`
+  - All 49 tests pass
 - [ ] Consider parallel execution of non-hanging test groups
 - [ ] Document the testrunner usage and configuration options
 - [ ] Ensure we can merge TRX results from multiple runs effectively

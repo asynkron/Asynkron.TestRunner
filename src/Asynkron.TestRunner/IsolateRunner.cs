@@ -3,14 +3,41 @@ using Spectre.Console;
 
 namespace Asynkron.TestRunner;
 
+/// <summary>
+/// Result of an isolation run, containing isolated hanging tests and failed batches.
+/// </summary>
+public record IsolationResult(
+    List<string> IsolatedHangingTests,
+    List<string> FailedBatches,
+    int TotalBatches,
+    int PassedBatches,
+    TimeSpan TotalDuration);
+
 public class IsolateRunner
 {
     private const int MaxTestsPerBatch = 5000;
+    private const int MaxRecursionDepth = 10; // Prevent infinite recursion
 
-    private readonly int _timeoutSeconds;
+    private readonly TimeoutStrategy _timeoutStrategy;
     private readonly string[] _baseTestArgs;
     private readonly string? _initialFilter;
     private TestTree? _testTree;
+    private int _currentAttempt = 1; // Track attempt number for graduated timeouts
+
+    // Track isolated hanging tests across recursive runs
+    private readonly List<string> _isolatedHangingTests = [];
+    private readonly List<string> _failedBatches = [];
+    private readonly HashSet<string> _completedBatches = []; // Batches we've fully processed
+
+    /// <summary>
+    /// Gets the list of isolated hanging tests after a run.
+    /// </summary>
+    public IReadOnlyList<string> IsolatedHangingTests => _isolatedHangingTests;
+
+    /// <summary>
+    /// Gets the list of failed (non-hanging) batches after a run.
+    /// </summary>
+    public IReadOnlyList<string> FailedBatches => _failedBatches;
 
     private record TestBatch(string Label, List<string> Tests, List<string> FilterPrefixes);
 
@@ -33,18 +60,42 @@ public class IsolateRunner
     }
 
     public IsolateRunner(string[] baseTestArgs, int timeoutSeconds = 30, string? initialFilter = null)
+        : this(baseTestArgs, new TimeoutStrategy(TimeoutMode.Fixed, timeoutSeconds), initialFilter)
+    {
+    }
+
+    public IsolateRunner(string[] baseTestArgs, TimeoutStrategy timeoutStrategy, string? initialFilter = null)
     {
         _baseTestArgs = baseTestArgs;
-        _timeoutSeconds = timeoutSeconds;
+        _timeoutStrategy = timeoutStrategy;
         _initialFilter = initialFilter;
     }
 
+    /// <summary>
+    /// Gets the current timeout strategy.
+    /// </summary>
+    public TimeoutStrategy TimeoutStrategy => _timeoutStrategy;
+
     public async Task<int> RunAsync(string? initialFilter = null)
     {
+        var result = await RunWithResultAsync(initialFilter);
+        return result.IsolatedHangingTests.Count == 0 && result.FailedBatches.Count == 0 ? 0 : 1;
+    }
+
+    /// <summary>
+    /// Runs isolation and returns detailed results.
+    /// </summary>
+    public async Task<IsolationResult> RunWithResultAsync(string? initialFilter = null)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        var totalBatches = 0;
+        var passedBatches = 0;
+
         // Use constructor filter if no parameter provided
         var filter = initialFilter ?? _initialFilter;
 
         Console.WriteLine("Isolating tests in smaller groups...");
+        Console.WriteLine($"Timeout: {_timeoutStrategy.GetDescription()}");
         if (filter != null)
             Console.WriteLine($"Filter: {filter}");
         Console.WriteLine();
@@ -54,7 +105,7 @@ public class IsolateRunner
         if (allTests.Count == 0)
         {
             Console.WriteLine("No tests found.");
-            return 1;
+            return new IsolationResult([], [], 0, 0, stopwatch.Elapsed);
         }
         Console.WriteLine($"Found {allTests.Count} tests.");
         Console.WriteLine();
@@ -74,11 +125,12 @@ public class IsolateRunner
             if (!built)
             {
                 Console.WriteLine("Prebuild failed. Aborting isolation.");
-                return 1;
+                return new IsolationResult([], ["Prebuild failed"], 0, 0, stopwatch.Elapsed);
             }
         }
 
         var batches = BuildTestBatches(_testTree.Root);
+        totalBatches = batches.Count;
 
         Console.WriteLine($"Running {batches.Count} group(s) (<= {MaxTestsPerBatch} tests each)...");
         Console.WriteLine();
@@ -128,32 +180,259 @@ public class IsolateRunner
 
         var hangingGroups = results.Where(r => r.Hung).ToList();
         var failingGroups = results.Where(r => !r.Hung && !r.Succeeded).ToList();
-        var passedGroups = results.Count - hangingGroups.Count - failingGroups.Count;
+        passedBatches = results.Count - hangingGroups.Count - failingGroups.Count;
 
-        Console.WriteLine("Isolation complete.");
-        Console.WriteLine($"Batches: {results.Count}, Passed: {passedGroups}, Failed: {failingGroups.Count}, Hung: {hangingGroups.Count}");
+        // Track failed batches
+        foreach (var fg in failingGroups)
+        {
+            _failedBatches.Add(fg.Label);
+        }
 
+        Console.WriteLine("Initial isolation complete.");
+        Console.WriteLine($"Batches: {results.Count}, Passed: {passedBatches}, Failed: {failingGroups.Count}, Hung: {hangingGroups.Count}");
+        Console.WriteLine();
+
+        // Recursively drill down into hanging groups to isolate individual tests
         if (hangingGroups.Count > 0)
         {
+            Console.WriteLine("Drilling down into hanging groups to isolate specific tests...");
             Console.WriteLine();
-            Console.WriteLine("Hanging groups:");
-            foreach (var group in hangingGroups)
+
+            // Increment attempt counter for graduated timeouts during drilling
+            _currentAttempt++;
+
+            foreach (var hangingGroup in hangingGroups)
             {
-                Console.WriteLine($"  ⏱ {group.Label}");
+                await DrillDownHangingBatchAsync(hangingGroup, 1);
             }
         }
 
-        if (failingGroups.Count > 0)
+        stopwatch.Stop();
+
+        // Use ChartRenderer for the final summary
+        ChartRenderer.RenderIsolationSummary(
+            _isolatedHangingTests,
+            _failedBatches,
+            totalBatches + _completedBatches.Count, // Include drill-down batches
+            passedBatches,
+            stopwatch.Elapsed);
+
+        return new IsolationResult(
+            _isolatedHangingTests,
+            _failedBatches,
+            totalBatches + _completedBatches.Count,
+            passedBatches,
+            stopwatch.Elapsed);
+    }
+
+    /// <summary>
+    /// Recursively drills down into a hanging batch to isolate individual hanging tests.
+    /// </summary>
+    private async Task DrillDownHangingBatchAsync(BatchRunResult hangingBatch, int depth)
+    {
+        var indent = new string(' ', depth * 2);
+
+        if (depth > MaxRecursionDepth)
         {
-            Console.WriteLine();
-            Console.WriteLine("Failing groups:");
-            foreach (var group in failingGroups)
+            Console.WriteLine($"{indent}⚠ Max recursion depth reached for {hangingBatch.Label}");
+            // Add all tests from this batch as hanging
+            foreach (var test in hangingBatch.TimedOut)
             {
-                Console.WriteLine($"  ✗ {group.Label}");
+                if (!_isolatedHangingTests.Contains(test))
+                    _isolatedHangingTests.Add(test);
+            }
+            return;
+        }
+
+        // If we already have timed out tests identified, we're done drilling
+        if (hangingBatch.TimedOut.Count > 0 && hangingBatch.TotalTests <= 10)
+        {
+            Console.WriteLine($"{indent}Found {hangingBatch.TimedOut.Count} hanging test(s) in {hangingBatch.Label}:");
+            foreach (var test in hangingBatch.TimedOut)
+            {
+                Console.WriteLine($"{indent}  ⏱ {test}");
+                if (!_isolatedHangingTests.Contains(test))
+                    _isolatedHangingTests.Add(test);
+            }
+            return;
+        }
+
+        // Find the node(s) in the tree that correspond to this batch
+        var nodesToDrill = FindNodesForBatch(hangingBatch);
+
+        if (nodesToDrill.Count == 0)
+        {
+            Console.WriteLine($"{indent}⚠ Could not find tree nodes for {hangingBatch.Label}");
+            return;
+        }
+
+        Console.WriteLine($"{indent}Drilling into {hangingBatch.Label} ({hangingBatch.TotalTests} tests)...");
+
+        // Get child branches to test
+        var childBatches = BuildChildBatches(nodesToDrill);
+
+        if (childBatches.Count == 0)
+        {
+            // We're at leaf level - these are the hanging tests
+            Console.WriteLine($"{indent}  At leaf level - isolating individual tests");
+            foreach (var test in hangingBatch.TimedOut)
+            {
+                if (!_isolatedHangingTests.Contains(test))
+                    _isolatedHangingTests.Add(test);
+            }
+            return;
+        }
+
+        if (childBatches.Count == 1 && childBatches[0].Tests.Count == hangingBatch.TotalTests)
+        {
+            // Only one child and it has all the tests - we need to drill deeper
+            var singleNode = nodesToDrill[0];
+            if (singleNode.Children.Count > 0)
+            {
+                // Get children of children
+                var deeperBatches = singleNode.Children
+                    .Select(c => new TestBatch(
+                        GetNodeLabel(c),
+                        TestTree.GetAllTests(c),
+                        [GetFilterForNode(c)!]))
+                    .Where(b => b.Tests.Count > 0)
+                    .ToList();
+
+                if (deeperBatches.Count > 0)
+                {
+                    childBatches = deeperBatches;
+                }
             }
         }
 
-        return hangingGroups.Count == 0 && failingGroups.Count == 0 ? 0 : 1;
+        Console.WriteLine($"{indent}  Running {childBatches.Count} child batch(es)...");
+
+        foreach (var childBatch in childBatches)
+        {
+            if (_completedBatches.Contains(childBatch.Label))
+            {
+                Console.WriteLine($"{indent}    Skipping {childBatch.Label} (already processed)");
+                continue;
+            }
+
+            Console.WriteLine($"{indent}    Testing {childBatch.Label} ({childBatch.Tests.Count} tests)...");
+
+            var result = await RunBatchAsync(childBatch);
+            _completedBatches.Add(childBatch.Label);
+
+            if (result.Succeeded)
+            {
+                Console.WriteLine($"{indent}    ✓ {childBatch.Label} passed - branch is clean");
+                continue;
+            }
+
+            if (result.Hung)
+            {
+                if (childBatch.Tests.Count == 1)
+                {
+                    // Single test that hangs - we found it!
+                    var hangingTest = childBatch.Tests[0];
+                    Console.WriteLine($"{indent}    ⏱ ISOLATED: {hangingTest}");
+                    if (!_isolatedHangingTests.Contains(hangingTest))
+                        _isolatedHangingTests.Add(hangingTest);
+                }
+                else if (result.TimedOut.Count == 1)
+                {
+                    // dotnet test told us exactly which test timed out
+                    var hangingTest = result.TimedOut.First();
+                    Console.WriteLine($"{indent}    ⏱ ISOLATED: {hangingTest}");
+                    if (!_isolatedHangingTests.Contains(hangingTest))
+                        _isolatedHangingTests.Add(hangingTest);
+                }
+                else
+                {
+                    // Need to drill deeper
+                    await DrillDownHangingBatchAsync(result, depth + 1);
+                }
+            }
+            else
+            {
+                // Failed but not hanging - report but don't drill
+                Console.WriteLine($"{indent}    ✗ {childBatch.Label} failed ({result.Failed.Count} failures)");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Finds tree nodes that correspond to a batch's filter prefixes.
+    /// </summary>
+    private List<TestTreeNode> FindNodesForBatch(BatchRunResult batch)
+    {
+        var nodes = new List<TestTreeNode>();
+
+        foreach (var prefix in batch.TimedOut.Count > 0
+            ? batch.TimedOut.Select(GetTestPrefix).Distinct()
+            : [batch.Label])
+        {
+            var node = _testTree!.FindNodeByPath(prefix);
+            if (node != null && !nodes.Contains(node))
+            {
+                nodes.Add(node);
+            }
+        }
+
+        // Fallback: try to find by label
+        if (nodes.Count == 0)
+        {
+            var node = _testTree!.FindNodeByPath(batch.Label);
+            if (node != null)
+                nodes.Add(node);
+        }
+
+        return nodes;
+    }
+
+    private static string GetTestPrefix(string testName)
+    {
+        // Get the namespace.class portion of a test name
+        var lastDot = testName.LastIndexOf('.');
+        return lastDot > 0 ? testName[..lastDot] : testName;
+    }
+
+    /// <summary>
+    /// Builds batches from the children of the given nodes.
+    /// </summary>
+    private static List<TestBatch> BuildChildBatches(List<TestTreeNode> nodes)
+    {
+        var batches = new List<TestBatch>();
+
+        foreach (var node in nodes)
+        {
+            if (node.Children.Count == 0)
+            {
+                // This is a leaf node - create a batch for each test
+                foreach (var test in node.Tests)
+                {
+                    batches.Add(new TestBatch(
+                        test,
+                        [test],
+                        [test]));
+                }
+            }
+            else
+            {
+                // Create a batch for each child branch
+                foreach (var child in node.Children.OrderBy(c => c.Name))
+                {
+                    var tests = TestTree.GetAllTests(child);
+                    if (tests.Count > 0)
+                    {
+                        var filterPrefix = GetFilterForNode(child);
+                        batches.Add(new TestBatch(
+                            GetNodeLabel(child),
+                            tests,
+                            filterPrefix != null ? [filterPrefix] : []));
+                    }
+                }
+            }
+        }
+
+        return batches;
     }
 
     private List<TestBatch> BuildTestBatches(TestTreeNode root)
@@ -279,11 +558,15 @@ public class IsolateRunner
             args.Add("--results-directory");
             args.Add(tempDir);
 
-            if (_timeoutSeconds > 0)
+            // Calculate timeout based on strategy
+            var perTestTimeout = _timeoutStrategy.GetTimeout(_currentAttempt);
+            var batchTimeout = _timeoutStrategy.GetBatchTimeout(batch.Tests.Count, _currentAttempt);
+
+            if (perTestTimeout > 0)
             {
                 args.Add("--blame-hang");
                 args.Add("--blame-hang-timeout");
-                args.Add($"{_timeoutSeconds}s");
+                args.Add($"{perTestTimeout}s");
             }
 
             var filter = BuildFilter(batch);
@@ -293,8 +576,8 @@ public class IsolateRunner
                 args.Add(filter);
             }
 
-            var batchTimeoutSeconds = _timeoutSeconds > 0
-                ? Math.Max(_timeoutSeconds * 2, 120) // 2x per-test timeout, at least 2 minutes
+            var batchTimeoutSeconds = batchTimeout > 0
+                ? Math.Max(batchTimeout, 120) // at least 2 minutes
                 : 180; // default guardrail when hang detection disabled
 
             var idleTimeoutSeconds = Math.Max(batchTimeoutSeconds / 2, 90); // kill if no output for too long

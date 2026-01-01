@@ -145,4 +145,41 @@ public class TestTree
         }
         return tests;
     }
+
+    /// <summary>
+    /// Finds a node by its full path (e.g., "Namespace.Class.Method")
+    /// </summary>
+    public TestTreeNode? FindNodeByPath(string path)
+    {
+        return FindNodeByPath(_root, path);
+    }
+
+    /// <summary>
+    /// Finds a node in the tree by its full path.
+    /// </summary>
+    public static TestTreeNode? FindNodeByPath(TestTreeNode root, string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return root;
+
+        var parts = path.Split(NameSeparators, StringSplitOptions.RemoveEmptyEntries);
+        var current = root;
+
+        foreach (var part in parts)
+        {
+            var child = current.Children.FirstOrDefault(c =>
+                c.Name.Equals(part, StringComparison.OrdinalIgnoreCase));
+            if (child == null)
+            {
+                // Try partial match - path might be truncated
+                child = current.Children.FirstOrDefault(c =>
+                    c.FullPath.Contains(part, StringComparison.OrdinalIgnoreCase));
+            }
+            if (child == null)
+                return null;
+            current = child;
+        }
+
+        return current;
+    }
 }

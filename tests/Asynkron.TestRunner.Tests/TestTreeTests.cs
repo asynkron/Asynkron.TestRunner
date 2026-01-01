@@ -181,4 +181,82 @@ public class TestTreeTests
         Assert.Equal("A.B", nodeB.FullPath);
         Assert.Equal("A.B.C", nodeC.FullPath);
     }
+
+    [Fact]
+    public void FindNodeByPath_ReturnsCorrectNode()
+    {
+        var tree = new TestTree();
+        tree.AddTests(["Namespace.Class.Method.Test1"]);
+
+        var node = tree.FindNodeByPath("Namespace.Class");
+
+        Assert.NotNull(node);
+        Assert.Equal("Class", node.Name);
+        Assert.Equal("Namespace.Class", node.FullPath);
+    }
+
+    [Fact]
+    public void FindNodeByPath_ReturnsNull_WhenPathNotFound()
+    {
+        var tree = new TestTree();
+        tree.AddTests(["Namespace.Class.Method.Test1"]);
+
+        var node = tree.FindNodeByPath("NonExistent.Path");
+
+        Assert.Null(node);
+    }
+
+    [Fact]
+    public void FindNodeByPath_EmptyPath_ReturnsRoot()
+    {
+        var tree = new TestTree();
+        tree.AddTests(["Namespace.Class.Method.Test1"]);
+
+        var node = tree.FindNodeByPath("");
+
+        Assert.NotNull(node);
+        Assert.Same(tree.Root, node);
+    }
+
+    [Fact]
+    public void FindNodeByPath_CaseInsensitive()
+    {
+        var tree = new TestTree();
+        tree.AddTests(["Namespace.Class.Method.Test1"]);
+
+        var node = tree.FindNodeByPath("namespace.class");
+
+        Assert.NotNull(node);
+        Assert.Equal("Class", node.Name);
+    }
+
+    [Fact]
+    public void FindNodeByPath_WorksWithUnderscoreSeparators()
+    {
+        var tree = new TestTree();
+        tree.AddTests(["Namespace.Class.Method_WhenCondition_ThenResult.Test1"]);
+
+        // Should be able to navigate using underscore path as well
+        var node = tree.FindNodeByPath("Namespace.Class.Method");
+
+        Assert.NotNull(node);
+        Assert.Equal("Method", node.Name);
+    }
+
+    [Fact]
+    public void FindNodeByPath_FindsDeepNodes()
+    {
+        var tree = new TestTree();
+        tree.AddTests([
+            "A.B.C.D.E.F.Test1",
+            "A.B.C.D.E.F.Test2"
+        ]);
+
+        var node = tree.FindNodeByPath("A.B.C.D.E.F");
+
+        Assert.NotNull(node);
+        Assert.Equal("F", node.Name);
+        // Tests are stored at the deepest leaf nodes (Test1 and Test2 are children of F)
+        Assert.Equal(2, node.TotalTestCount);
+    }
 }
