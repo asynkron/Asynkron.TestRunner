@@ -21,13 +21,15 @@ public class IsolateRunner
     private readonly TimeoutStrategy _timeoutStrategy;
     private readonly string[] _baseTestArgs;
     private readonly string? _initialFilter;
+    private readonly int _maxParallelBatches;
     private TestTree? _testTree;
     private int _currentAttempt = 1; // Track attempt number for graduated timeouts
 
-    // Track isolated hanging tests across recursive runs
+    // Track isolated hanging tests across recursive runs (thread-safe for parallel execution)
     private readonly List<string> _isolatedHangingTests = [];
     private readonly List<string> _failedBatches = [];
     private readonly HashSet<string> _completedBatches = []; // Batches we've fully processed
+    private readonly object _resultsLock = new(); // Lock for thread-safe access to result collections
 
     /// <summary>
     /// Gets the list of isolated hanging tests after a run.
@@ -59,17 +61,23 @@ public class IsolateRunner
                                  (Passed.Count > 0 || HadResults);
     }
 
-    public IsolateRunner(string[] baseTestArgs, int timeoutSeconds = 30, string? initialFilter = null)
-        : this(baseTestArgs, new TimeoutStrategy(TimeoutMode.Fixed, timeoutSeconds), initialFilter)
+    public IsolateRunner(string[] baseTestArgs, int timeoutSeconds = 30, string? initialFilter = null, int maxParallelBatches = 1)
+        : this(baseTestArgs, new TimeoutStrategy(TimeoutMode.Fixed, timeoutSeconds), initialFilter, maxParallelBatches)
     {
     }
 
-    public IsolateRunner(string[] baseTestArgs, TimeoutStrategy timeoutStrategy, string? initialFilter = null)
+    public IsolateRunner(string[] baseTestArgs, TimeoutStrategy timeoutStrategy, string? initialFilter = null, int maxParallelBatches = 1)
     {
         _baseTestArgs = baseTestArgs;
         _timeoutStrategy = timeoutStrategy;
         _initialFilter = initialFilter;
+        _maxParallelBatches = maxParallelBatches > 0 ? maxParallelBatches : 1;
     }
+
+    /// <summary>
+    /// Gets the maximum number of batches that can run in parallel.
+    /// </summary>
+    public int MaxParallelBatches => _maxParallelBatches;
 
     /// <summary>
     /// Gets the current timeout strategy.
@@ -96,6 +104,8 @@ public class IsolateRunner
 
         Console.WriteLine("Isolating tests in smaller groups...");
         Console.WriteLine($"Timeout: {_timeoutStrategy.GetDescription()}");
+        if (_maxParallelBatches > 1)
+            Console.WriteLine($"Parallelism: {_maxParallelBatches} concurrent batches");
         if (filter != null)
             Console.WriteLine($"Filter: {filter}");
         Console.WriteLine();
@@ -132,51 +142,11 @@ public class IsolateRunner
         var batches = BuildTestBatches(_testTree.Root);
         totalBatches = batches.Count;
 
-        Console.WriteLine($"Running {batches.Count} group(s) (<= {MaxTestsPerBatch} tests each)...");
+        var parallelMode = _maxParallelBatches > 1 && batches.Count > 1;
+        Console.WriteLine($"Running {batches.Count} group(s) (<= {MaxTestsPerBatch} tests each){(parallelMode ? $" with {_maxParallelBatches}-way parallelism" : "")}...");
         Console.WriteLine();
 
-        var results = new List<BatchRunResult>();
-        var index = 1;
-        foreach (var batch in batches)
-        {
-            Console.WriteLine($"[{index}/{batches.Count}] {batch.Label} ({batch.Tests.Count} tests)");
-
-            var result = await RunBatchAsync(batch);
-            results.Add(result);
-
-            if (result.Succeeded)
-            {
-                Console.WriteLine($"  ✓ Passed (exit {result.ExitCode}, results: {result.Passed.Count})");
-            }
-            else if (result.Hung)
-            {
-                Console.WriteLine($"  ⏱ Hang/timeout suspected (timed out: {result.TimedOut.Count})");
-                foreach (var timedOut in result.TimedOut)
-                {
-                    Console.WriteLine($"    ⏱ {timedOut}");
-                }
-            }
-            else
-            {
-                var reason = result.Reason ?? $"exit code {result.ExitCode}";
-                Console.WriteLine($"  ✗ Failed ({result.Failed.Count} failed, {result.Passed.Count} passed, {reason})");
-                foreach (var failed in result.Failed.Take(3))
-                {
-                    Console.WriteLine($"    ✗ {failed}");
-                }
-                if (result.Failed.Count > 3)
-                {
-                    Console.WriteLine($"    ...and {result.Failed.Count - 3} more");
-                }
-                if (!result.HadResults)
-                {
-                    Console.WriteLine("    ⚠️ No TRX results captured for this batch (likely filter mismatch).");
-                }
-            }
-
-            Console.WriteLine();
-            index++;
-        }
+        var results = await RunBatchesAsync(batches, parallelMode);
 
         var hangingGroups = results.Where(r => r.Hung).ToList();
         var failingGroups = results.Where(r => !r.Hung && !r.Succeeded).ToList();
@@ -223,6 +193,135 @@ public class IsolateRunner
             totalBatches + _completedBatches.Count,
             passedBatches,
             stopwatch.Elapsed);
+    }
+
+    /// <summary>
+    /// Runs batches either sequentially or in parallel based on the parallelMode flag.
+    /// </summary>
+    private async Task<List<BatchRunResult>> RunBatchesAsync(List<TestBatch> batches, bool parallelMode)
+    {
+        if (parallelMode)
+        {
+            return await RunBatchesInParallelAsync(batches);
+        }
+        else
+        {
+            return await RunBatchesSequentiallyAsync(batches);
+        }
+    }
+
+    /// <summary>
+    /// Runs batches sequentially with progress output.
+    /// </summary>
+    private async Task<List<BatchRunResult>> RunBatchesSequentiallyAsync(List<TestBatch> batches)
+    {
+        var results = new List<BatchRunResult>();
+        var index = 1;
+
+        foreach (var batch in batches)
+        {
+            Console.WriteLine($"[{index}/{batches.Count}] {batch.Label} ({batch.Tests.Count} tests)");
+
+            var result = await RunBatchAsync(batch);
+            results.Add(result);
+
+            PrintBatchResult(result, "  ");
+            Console.WriteLine();
+            index++;
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// Runs batches in parallel with limited concurrency.
+    /// </summary>
+    private async Task<List<BatchRunResult>> RunBatchesInParallelAsync(List<TestBatch> batches)
+    {
+        var results = new BatchRunResult[batches.Count];
+        var completedCount = 0;
+        var semaphore = new SemaphoreSlim(_maxParallelBatches, _maxParallelBatches);
+        var consoleLock = new object();
+
+        Console.WriteLine($"Starting parallel execution of {batches.Count} batches...");
+        Console.WriteLine();
+
+        var tasks = batches.Select((batch, index) => Task.Run(async () =>
+        {
+            await semaphore.WaitAsync();
+            try
+            {
+                lock (consoleLock)
+                {
+                    Console.WriteLine($"[{index + 1}/{batches.Count}] Starting: {batch.Label} ({batch.Tests.Count} tests)");
+                }
+
+                var result = await RunBatchAsync(batch, suppressOutput: true);
+                results[index] = result;
+
+                var completed = Interlocked.Increment(ref completedCount);
+                lock (consoleLock)
+                {
+                    var status = result.Succeeded ? "✓" : result.Hung ? "⏱" : "✗";
+                    Console.WriteLine($"[{completed}/{batches.Count}] {status} Completed: {batch.Label}");
+                }
+            }
+            finally
+            {
+                semaphore.Release();
+            }
+        })).ToArray();
+
+        await Task.WhenAll(tasks);
+        Console.WriteLine();
+
+        // Print summary of all results
+        Console.WriteLine("Batch results:");
+        for (var i = 0; i < results.Length; i++)
+        {
+            var result = results[i];
+            Console.WriteLine($"  [{i + 1}] {batches[i].Label}:");
+            PrintBatchResult(result, "      ");
+        }
+        Console.WriteLine();
+
+        return results.ToList();
+    }
+
+    /// <summary>
+    /// Prints the result of a batch run.
+    /// </summary>
+    private static void PrintBatchResult(BatchRunResult result, string indent)
+    {
+        if (result.Succeeded)
+        {
+            Console.WriteLine($"{indent}✓ Passed (exit {result.ExitCode}, results: {result.Passed.Count})");
+        }
+        else if (result.Hung)
+        {
+            Console.WriteLine($"{indent}⏱ Hang/timeout suspected (timed out: {result.TimedOut.Count})");
+            foreach (var timedOut in result.TimedOut)
+            {
+                Console.WriteLine($"{indent}  ⏱ {timedOut}");
+            }
+        }
+        else
+        {
+            var reason = result.Reason ?? $"exit code {result.ExitCode}";
+            Console.WriteLine($"{indent}✗ Failed ({result.Failed.Count} failed, {result.Passed.Count} passed, {reason})");
+            foreach (var failed in result.Failed.Take(3))
+            {
+                Console.WriteLine($"{indent}  ✗ {failed}");
+            }
+            if (result.Failed.Count > 3)
+            {
+                Console.WriteLine($"{indent}  ...and {result.Failed.Count - 3} more");
+            }
+            if (!result.HadResults)
+            {
+                Console.WriteLine($"{indent}  ⚠ No TRX results captured for this batch (likely filter mismatch).");
+            }
+        }
     }
 
     /// <summary>
@@ -536,7 +635,7 @@ public class IsolateRunner
         return string.IsNullOrWhiteSpace(node.FullPath) ? null : node.FullPath;
     }
 
-    private async Task<BatchRunResult> RunBatchAsync(TestBatch batch)
+    private async Task<BatchRunResult> RunBatchAsync(TestBatch batch, bool suppressOutput = false)
     {
         if (batch.Tests.Count == 0)
         {
@@ -582,15 +681,19 @@ public class IsolateRunner
 
             var idleTimeoutSeconds = Math.Max(batchTimeoutSeconds / 2, 90); // kill if no output for too long
 
+            Action<string>? progressLogger = suppressOutput
+                ? null
+                : line =>
+                {
+                    if (IsInterestingOutput(line))
+                        Console.WriteLine($"    {line}");
+                };
+
             (int exitCode, bool killedByGuard, string? guardReason) = await RunDotnetProcessAsync(
                 args,
                 batchTimeoutSeconds,
                 idleTimeoutSeconds,
-                line =>
-                {
-                    if (IsInterestingOutput(line))
-                        Console.WriteLine($"    {line}");
-                });
+                progressLogger);
 
             var results = Directory.GetFiles(tempDir, "*.trx", SearchOption.AllDirectories)
                 .Select(TrxParser.ParseTrxFile)
