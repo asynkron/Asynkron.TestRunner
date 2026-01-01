@@ -10,12 +10,14 @@ public class TestRunner
     private readonly ResultStore _store;
     private readonly int _timeoutSeconds;
     private readonly string? _filter;
+    private readonly bool _quiet;
 
-    public TestRunner(ResultStore store, int? timeoutSeconds = null, string? filter = null)
+    public TestRunner(ResultStore store, int? timeoutSeconds = null, string? filter = null, bool quiet = false)
     {
         _store = store;
         _timeoutSeconds = timeoutSeconds ?? DefaultTimeoutSeconds;
         _filter = filter;
+        _quiet = quiet;
     }
 
     public async Task<int> RunTestsAsync(string[] args)
@@ -23,6 +25,24 @@ public class TestRunner
         var runId = DateTime.Now.ToString("yyyyMMdd_HHmmss");
         var resultsDir = Path.Combine(_store.StoreFolder, runId);
         Directory.CreateDirectory(resultsDir);
+
+        // In quiet mode, discover tests first and show the tree
+        if (_quiet)
+        {
+            Console.WriteLine("Discovering tests...");
+            var tests = await DiscoverTestsAsync(args, _filter);
+            if (tests.Count > 0)
+            {
+                var tree = new TestTree();
+                tree.AddTests(tests);
+                Console.WriteLine($"Found {tests.Count} tests");
+                Console.WriteLine();
+                Console.WriteLine("Test hierarchy:");
+                tree.Render(maxDepth: 5);
+                Console.WriteLine();
+            }
+            Console.WriteLine("Running tests...");
+        }
 
         // Build the command with TRX logger and blame-hang injected
         var processArgs = BuildArgs(args, resultsDir, _timeoutSeconds);
@@ -50,19 +70,22 @@ public class TestRunner
             startInfo.ArgumentList.Add(arg);
         }
 
-        Console.WriteLine($"Running: {executable} {string.Join(" ", commandArgs)}");
-        Console.WriteLine();
+        if (!_quiet)
+        {
+            Console.WriteLine($"Running: {executable} {string.Join(" ", commandArgs)}");
+            Console.WriteLine();
+        }
 
         using var process = new Process { StartInfo = startInfo };
 
         process.OutputDataReceived += (_, e) =>
         {
-            if (e.Data != null) Console.WriteLine(e.Data);
+            if (e.Data != null && !_quiet) Console.WriteLine(e.Data);
         };
 
         process.ErrorDataReceived += (_, e) =>
         {
-            if (e.Data != null) Console.Error.WriteLine(e.Data);
+            if (e.Data != null && !_quiet) Console.Error.WriteLine(e.Data);
         };
 
         process.Start();
@@ -210,5 +233,81 @@ public class TestRunner
         }
 
         return argsList.ToArray();
+    }
+
+    private async Task<List<string>> DiscoverTestsAsync(string[] args, string? filter)
+    {
+        var listArgs = args.ToList();
+        listArgs.Add("--list-tests");
+
+        var executable = "dotnet";
+        var commandArgs = listArgs.ToArray();
+
+        if (commandArgs.Length > 0 && commandArgs[0] == "dotnet")
+        {
+            commandArgs = commandArgs.Skip(1).ToArray();
+        }
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = executable,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        foreach (var arg in commandArgs)
+        {
+            startInfo.ArgumentList.Add(arg);
+        }
+
+        using var process = new Process { StartInfo = startInfo };
+        var output = new System.Text.StringBuilder();
+
+        process.OutputDataReceived += (_, e) =>
+        {
+            if (e.Data != null) output.AppendLine(e.Data);
+        };
+
+        process.Start();
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+        try
+        {
+            await process.WaitForExitAsync(cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            process.Kill(true);
+        }
+
+        // Parse test names from output
+        var tests = new List<string>();
+        var inTestList = false;
+
+        foreach (var line in output.ToString().Split('\n'))
+        {
+            var trimmed = line.Trim();
+            if (trimmed.StartsWith("The following Tests are available:"))
+            {
+                inTestList = true;
+                continue;
+            }
+            if (inTestList && !string.IsNullOrWhiteSpace(trimmed) && !trimmed.StartsWith("Test run for"))
+            {
+                tests.Add(trimmed);
+            }
+        }
+
+        // Filter locally if a filter is specified
+        if (filter != null)
+        {
+            tests = tests.Where(t => t.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+
+        return tests;
     }
 }

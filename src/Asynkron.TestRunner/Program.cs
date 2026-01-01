@@ -57,6 +57,7 @@ static async Task<int> RunAsync(string[] args)
     // Parse options before the -- separator
     var timeout = ParseTimeout(args);
     var filter = ParseFilter(args);
+    var quiet = ParseQuiet(args);
 
     // Handle "--" separator for running tests
     var separatorIndex = Array.IndexOf(args, "--");
@@ -108,7 +109,7 @@ static async Task<int> RunAsync(string[] args)
     }
 
     var store = new ResultStore(testArgs);
-    var runner = new TestRunner(store, timeout, filter);
+    var runner = new TestRunner(store, timeout, filter, quiet);
     return await runner.RunTestsAsync(testArgs);
 }
 
@@ -136,6 +137,20 @@ static int? ParseTimeout(string[] args)
         }
     }
     return null; // Use default
+}
+
+static bool ParseQuiet(string[] args)
+{
+    for (var i = 0; i < args.Length; i++)
+    {
+        if (args[i] == "--") break; // Stop at separator
+        if (args[i].Equals("--quiet", StringComparison.OrdinalIgnoreCase) ||
+            args[i].Equals("-q", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 static int? ParseIsolateTimeout(string[] args)
@@ -409,6 +424,8 @@ static void PrintUsage()
           -t, --timeout <seconds>    Hang detection timeout in seconds (default: 20)
                                      If a test runs longer than this, the test host is killed
                                      Use --timeout 0 to disable hang detection
+          -q, --quiet                Suppress dotnet test output, show only test tree and results
+                                     Displays test hierarchy, batch info, and pass/fail summary
           -h, --help                 Show this help message
 
         Filter Pattern:
@@ -432,7 +449,9 @@ static void PrintUsage()
 
         Examples:
           testrunner                                   Run all tests
+          testrunner -q                                Run all tests with quiet output
           testrunner "UserService"                     Run tests matching 'UserService'
+          testrunner -q "UserService"                  Run tests matching 'UserService' quietly
           testrunner list "UserService"                List tests matching 'UserService'
           testrunner isolate "SlowTests"               Find hanging test in SlowTests
           testrunner isolate -p 4 "Tests"              Isolate with 4-way parallelism
