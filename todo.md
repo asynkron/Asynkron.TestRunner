@@ -78,6 +78,19 @@ eventually, there will be only single hanging tests left. which we can present t
     - Shows timeout description in output
   - Added 14 new unit tests in `TimeoutStrategyTests.cs`
   - All 49 tests pass
-- [ ] Consider parallel execution of non-hanging test groups
+- [x] Consider parallel execution of non-hanging test groups
+  - Added `_maxParallelBatches` field to `IsolateRunner` to control concurrency
+  - Added `maxParallelBatches` parameter to constructors (default: 1 for sequential)
+  - Implemented `RunBatchesInParallelAsync` using `SemaphoreSlim` for throttling
+  - Added thread-safe output handling with locks for console writes
+  - Parallel mode runs independent batches concurrently:
+    - Uses `Task.WhenAll` to await all batch tasks
+    - Results are collected in order and printed as a summary after completion
+    - Progress is shown with completion count and status icons (✓/⏱/✗)
+  - Added `--parallel/-p` CLI option for `isolate` command:
+    - `testrunner isolate -p 4` runs up to 4 batches concurrently
+    - `testrunner isolate -p` defaults to CPU count
+  - Added 8 new unit tests in `IsolateRunnerTests.cs`
+  - All 57 tests pass
 - [ ] Document the testrunner usage and configuration options
 - [ ] Ensure we can merge TRX results from multiple runs effectively
