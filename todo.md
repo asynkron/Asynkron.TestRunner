@@ -38,3 +38,4 @@ eventually, there will be only single hanging tests left. which we can present t
 - [ ] Explore timeout strategies for individual tests
 - [ ] Consider parallel execution of non-hanging test groups
 - [ ] Document the testrunner usage and configuration options
+- [ ] Ensure we can merge TRX results from multiple runs effectively
