@@ -92,5 +92,10 @@ eventually, there will be only single hanging tests left. which we can present t
     - `testrunner isolate -p` defaults to CPU count
   - Added 8 new unit tests in `IsolateRunnerTests.cs`
   - All 57 tests pass
-- [ ] Document the testrunner usage and configuration options
+- [x] Document the testrunner usage and configuration options
+  - Updated README.md with:
+    - Parallel isolation section (`--parallel/-p` option)
+    - Configuration Options table (timeout, isolate options)
+    - Filter pattern examples
+  - Help text in Program.cs already comprehensive
 - [ ] Ensure we can merge TRX results from multiple runs effectively

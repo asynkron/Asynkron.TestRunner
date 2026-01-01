@@ -90,7 +90,24 @@ You can also manually trigger isolation:
 testrunner isolate                  # Find hanging test in all tests
 testrunner isolate "language"       # Find within tests matching 'language'
 testrunner isolate --timeout 60     # Use 60s timeout (default: 30s)
+testrunner isolate --parallel 4     # Run up to 4 batches concurrently
+testrunner isolate -p               # Use all CPU cores for parallel batches
 ```
+
+### Parallel Isolation
+
+For large test suites, parallel isolation can significantly speed up the process:
+
+```bash
+testrunner isolate -p 4 "Tests"     # Run 4 test batches concurrently
+testrunner isolate --parallel       # Auto-detect parallelism (CPU count)
+```
+
+Parallel mode:
+- Runs independent test batches concurrently
+- Uses a semaphore to limit concurrent processes
+- Thread-safe console output with progress indicators
+- Falls back to sequential drilling when hanging tests are found
 
 ### View regressions
 
@@ -133,6 +150,32 @@ Test History (4 runs)
 2025-12-30 10:03  █████████████████████████████X  132/136 (97.1%)  ✗4
 2025-12-30 10:00  █████████████████████████████X  135/136 (99.3%)  ✗1
 2025-12-30 10:00  █████████████████████████████X  135/136 (99.3%)  ✗1
+```
+
+## Configuration Options
+
+### Timeout Options
+
+| Option | Description |
+|--------|-------------|
+| `-t, --timeout <seconds>` | Per-test hang timeout (default: 20s for run, 30s for isolate) |
+| `--timeout 0` | Disable hang detection entirely |
+
+### Isolate Options
+
+| Option | Description |
+|--------|-------------|
+| `-t, --timeout <seconds>` | Per-test timeout during isolation (default: 30s) |
+| `-p, --parallel [N]` | Run N batches in parallel (default: 1, or CPU count if no N) |
+
+### Filter Patterns
+
+Filters use `FullyQualifiedName~<pattern>` matching:
+
+```bash
+testrunner "MyClass"            # Matches: MyNamespace.MyClass.AnyTest
+testrunner "Integration"        # Matches all tests containing "Integration"
+testrunner "Tests.Unit"         # Matches: MyApp.Tests.Unit.*
 ```
 
 ## How History is Tracked
