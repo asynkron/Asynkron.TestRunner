@@ -15,3 +15,11 @@ eventually, there will be only single hanging tests left. which we can present t
 
 --- document your findings and improvements here ---
 
+- [ ] Fix the file structure for dotnet projects, /src /tests etc.
+- [ ] Add tests for the testrunner itself
+- [ ] Implement recursive test runs to isolate hanging tests
+- [ ] Improve logging and reporting of test results
+- [ ] Explore timeout strategies for individual tests
+- [ ] Consider parallel execution of non-hanging test groups
+- [ ] Document the testrunner usage and configuration options
+- [ ] Set up continuous integration for the testrunner project, github actions build publish release on nuget
