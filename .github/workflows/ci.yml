@@ -16,6 +16,8 @@ jobs:
         with:
           dotnet-version: '8.0.x'
       - name: Restore
-        run: dotnet restore
+        run: dotnet restore Asynkron.TestRunner.sln
       - name: Build
-        run: dotnet build -c Release --nologo
+        run: dotnet build Asynkron.TestRunner.sln -c Release --nologo
+      - name: Test
+        run: dotnet test Asynkron.TestRunner.sln -c Release --no-build --verbosity normal

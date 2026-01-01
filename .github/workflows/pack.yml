@@ -14,10 +14,12 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
+      - name: Test
+        run: dotnet test Asynkron.TestRunner.sln -c Release --verbosity normal
       - name: Pack
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          dotnet pack -c Release -o ./nupkg Asynkron.TestRunner.csproj -p:Version="$VERSION"
+          dotnet pack -c Release -o ./nupkg src/Asynkron.TestRunner/Asynkron.TestRunner.csproj -p:Version="$VERSION"
       - name: Publish to NuGet
         env:
           NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
