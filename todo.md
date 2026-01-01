@@ -15,11 +15,26 @@ eventually, there will be only single hanging tests left. which we can present t
 
 --- document your findings and improvements here ---
 
-- [ ] Fix the file structure for dotnet projects, /src /tests etc.
-- [ ] Add tests for the testrunner itself
+- [x] Fix the file structure for dotnet projects, /src /tests etc.
+  - Created `Asynkron.TestRunner.sln` at root
+  - Moved source files to `src/Asynkron.TestRunner/`
+  - Created `tests/Asynkron.TestRunner.Tests/` with xUnit test project
+  - Updated csproj to reference README from root with `..\..\README.md`
+  - Added `InternalsVisibleTo` for test project access
+
+- [x] Add tests for the testrunner itself
+  - Added 30 unit tests covering:
+    - `TestTreeTests`: 13 tests for test tree hierarchy, path building, node traversal
+    - `TrxParserTests`: 10 tests for TRX file parsing, timeout detection, result aggregation
+    - `TestRunResultTests`: 7 tests for pass rate, regressions, fixes detection
+  - All tests pass
+
+- [x] Set up continuous integration for the testrunner project, github actions build publish release on nuget
+  - Updated `.github/workflows/ci.yml` to use solution file and run tests
+  - Updated `.github/workflows/pack.yml` to run tests before publishing and use new project path
+
 - [ ] Implement recursive test runs to isolate hanging tests
 - [ ] Improve logging and reporting of test results
 - [ ] Explore timeout strategies for individual tests
 - [ ] Consider parallel execution of non-hanging test groups
 - [ ] Document the testrunner usage and configuration options
-- [ ] Set up continuous integration for the testrunner project, github actions build publish release on nuget
