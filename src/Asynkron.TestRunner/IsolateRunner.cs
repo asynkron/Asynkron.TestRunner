@@ -690,6 +690,8 @@ public class IsolateRunner
             // Add logger and results directory
             if (isVsTest)
             {
+                // Enable parallel execution
+                args.Add("/Parallel");
                 // vstest uses /logger format
                 // Add console logger for live output (Passed/Failed per test)
                 args.Add("/logger:console;verbosity=normal");
