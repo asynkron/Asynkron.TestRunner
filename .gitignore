@@ -16,3 +16,6 @@
 .idea/
 .vs/
 *.user
+
+# Local test scripts
+test-jsengine.sh
