@@ -220,13 +220,13 @@ public class IsolateRunner
 
         foreach (var batch in batches)
         {
-            AnsiConsole.Markup($"[dim]\\[{index}/{batches.Count}][/] ");
+            AnsiConsole.Markup($"[dim][[{index}/{batches.Count}]][/] ");
             DisplayBatchProgress(batch);
 
             var result = await RunBatchAsync(batch, suppressOutput: true);
             results.Add(result);
 
-            AnsiConsole.Markup($"[dim]\\[{index}/{batches.Count}][/] ");
+            AnsiConsole.Markup($"[dim][[{index}/{batches.Count}]][/] ");
             DisplayBatchProgress(batch, result);
             index++;
         }
@@ -254,7 +254,7 @@ public class IsolateRunner
             {
                 lock (consoleLock)
                 {
-                    AnsiConsole.Markup($"[dim]\\[{index + 1}/{batches.Count}][/] ");
+                    AnsiConsole.Markup($"[dim][[{index + 1}/{batches.Count}]][/] ");
                     DisplayBatchProgress(batch);
                 }
 
@@ -264,7 +264,7 @@ public class IsolateRunner
                 var completed = Interlocked.Increment(ref completedCount);
                 lock (consoleLock)
                 {
-                    AnsiConsole.Markup($"[dim]\\[{completed}/{batches.Count}][/] ");
+                    AnsiConsole.Markup($"[dim][[{completed}/{batches.Count}]][/] ");
                     DisplayBatchProgress(batch, result);
                 }
             }
@@ -419,7 +419,8 @@ public class IsolateRunner
             AnsiConsole.Markup($"{indent}    ");
             DisplayBatchProgress(childBatch);
 
-            var result = await RunBatchAsync(childBatch, suppressOutput: true);
+            // Use blame-hang when drilling down to isolate hanging tests
+            var result = await RunBatchAsync(childBatch, suppressOutput: true, useBlameHang: true);
             _completedBatches.Add(childBatch.Label);
 
             if (result.Succeeded)
@@ -642,7 +643,7 @@ public class IsolateRunner
         return string.IsNullOrWhiteSpace(node.FullPath) ? null : node.FullPath;
     }
 
-    private async Task<BatchRunResult> RunBatchAsync(TestBatch batch, bool suppressOutput = false)
+    private async Task<BatchRunResult> RunBatchAsync(TestBatch batch, bool suppressOutput = false, bool useBlameHang = false)
     {
         if (batch.Tests.Count == 0)
         {
@@ -655,75 +656,130 @@ public class IsolateRunner
         try
         {
             var isVsTest = IsVsTestMode();
-            var args = _baseTestArgs.ToList();
+            // Expand paths (e.g., ~ to home directory) in args
+            var args = _baseTestArgs.Select(ExpandPath).ToList();
             RemoveFilterArgs(args);
-            EnsureReleaseConfiguration(args);
 
-            // vstest doesn't support --no-build
+            // vstest doesn't support --configuration or --no-build
             if (!isVsTest)
             {
+                EnsureReleaseConfiguration(args);
                 AddNoBuild(args);
             }
 
-            args.Add("--logger");
-            args.Add("trx");
-
-            // vstest uses different flag names
-            if (isVsTest)
-            {
-                args.Add("--ResultsDirectory");
-            }
-            else
-            {
-                args.Add("--results-directory");
-            }
-            args.Add(tempDir);
-
             // Calculate timeout based on strategy
-            var perTestTimeout = _timeoutStrategy.GetTimeout(_currentAttempt);
+            // Note: vstest doesn't support --blame-hang, so we rely on process-level timeout only
             var batchTimeout = _timeoutStrategy.GetBatchTimeout(batch.Tests.Count, _currentAttempt);
-
-            if (perTestTimeout > 0)
-            {
-                args.Add("--blame-hang");
-                args.Add("--blame-hang-timeout");
-                args.Add($"{perTestTimeout}s");
-            }
 
             var filter = BuildFilter(batch);
             if (!string.IsNullOrWhiteSpace(filter))
             {
-                // vstest uses --testCaseFilter, dotnet test uses --filter
                 if (isVsTest)
                 {
-                    args.Add("--testCaseFilter");
+                    // vstest uses /testCaseFilter:"filter" format
+                    args.Add($"/testCaseFilter:{filter}");
                 }
                 else
                 {
+                    // dotnet test uses --filter "filter"
                     args.Add("--filter");
+                    args.Add(filter);
                 }
-                args.Add(filter);
+            }
+
+            // Add logger and results directory
+            if (isVsTest)
+            {
+                // vstest uses /logger format
+                // Add console logger for live output (Passed/Failed per test)
+                args.Add("/logger:console;verbosity=normal");
+                // Add TRX logger for results parsing
+                args.Add("/logger:trx");
+                args.Add($"/ResultsDirectory:{tempDir}");
+            }
+            else
+            {
+                // dotnet test uses --logger trx --results-directory path
+                args.Add("--logger");
+                args.Add("trx");
+                args.Add("--results-directory");
+                args.Add(tempDir);
             }
 
             var batchTimeoutSeconds = batchTimeout > 0
                 ? Math.Max(batchTimeout, 120) // at least 2 minutes
                 : 180; // default guardrail when hang detection disabled
 
-            var idleTimeoutSeconds = Math.Max(batchTimeoutSeconds / 2, 90); // kill if no output for too long
+            // Cap idle timeout at 120 seconds - if no output for 2 minutes, something is wrong
+            var idleTimeoutSeconds = Math.Min(Math.Max(batchTimeoutSeconds / 2, 90), 120);
 
-            Action<string>? progressLogger = suppressOutput
-                ? null
-                : line =>
+            // Track progress even when suppressing noisy output
+            var testsPassed = 0;
+            var testsFailed = 0;
+            var testsHung = 0;
+            var lastProgressUpdate = DateTime.UtcNow;
+            var lastPrintedTotal = 0;
+
+            Action<string>? progressLogger = line =>
+            {
+                var trimmed = line.Trim();
+                var lower = trimmed.ToLowerInvariant();
+
+                // vstest console logger format: "  Passed TestName [duration]" or "  Failed TestName [duration]"
+                if (trimmed.StartsWith("Passed ", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (IsInterestingOutput(line))
-                        Console.WriteLine($"    {line}");
-                };
+                    testsPassed++;
+                }
+                else if (trimmed.StartsWith("Failed ", StringComparison.OrdinalIgnoreCase))
+                {
+                    testsFailed++;
+                    // Show first few failures so user can diagnose
+                    if (testsFailed <= 5)
+                    {
+                        var currentTotal = testsPassed + testsFailed + testsHung;
+                        Console.WriteLine($"    ✗ [{currentTotal}/{batch.Tests.Count}] {trimmed}");
+                    }
+                }
+                else if (trimmed.StartsWith("Skipped ", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Count skipped as passed for progress purposes
+                    testsPassed++;
+                }
+
+                // Detect timeouts/hangs
+                if (lower.Contains("timed out") || (lower.Contains("timeout") && !lower.Contains("blame-hang-timeout")))
+                {
+                    testsHung++;
+                }
+
+                // Update progress every 100 tests or every 5 seconds (only if count changed)
+                var total = testsPassed + testsFailed + testsHung;
+                var shouldPrint = total > lastPrintedTotal &&
+                                 (total % 100 == 0 || (DateTime.UtcNow - lastProgressUpdate).TotalSeconds > 5);
+
+                if (shouldPrint && total > 0)
+                {
+                    Console.WriteLine($"    ... [{total}/{batch.Tests.Count}] passed: {testsPassed}, failed: {testsFailed}, hanging: {testsHung}");
+                    lastProgressUpdate = DateTime.UtcNow;
+                    lastPrintedTotal = total;
+                }
+
+                // Show other interesting output if not suppressing
+                if (!suppressOutput && IsInterestingOutput(line))
+                {
+                    Console.WriteLine($"    {line}");
+                }
+            };
+
+            // Enable heartbeat even when suppressing output so user sees progress
+            var heartbeatSeconds = 15;
 
             (int exitCode, bool killedByGuard, string? guardReason) = await RunDotnetProcessAsync(
                 args,
                 batchTimeoutSeconds,
                 idleTimeoutSeconds,
-                progressLogger);
+                progressLogger,
+                heartbeatSeconds);
 
             var results = Directory.GetFiles(tempDir, "*.trx", SearchOption.AllDirectories)
                 .Select(TrxParser.ParseTrxFile)
@@ -747,9 +803,10 @@ public class IsolateRunner
 
             if (!hadResults)
             {
+                var cmdName = isVsTest ? "dotnet vstest" : "dotnet test";
                 reason = exitCode != 0
-                    ? $"dotnet test exited {exitCode} with no results (filter mismatch?)"
-                    : "dotnet test produced no results";
+                    ? $"{cmdName} exited {exitCode} with no results (filter mismatch?)"
+                    : $"{cmdName} produced no results";
             }
             else if (exitCode != 0 && failed.Count == 0 && timedOut.Count == 0)
             {
@@ -799,18 +856,40 @@ public class IsolateRunner
 
     private static string? BuildFilter(TestBatch batch)
     {
-        if (batch.FilterPrefixes.Count == 0)
-            return null;
+        // Try to use filter prefixes first (more efficient)
+        // Use FullyQualifiedName~ for matching (Namespace.Class.Method)
+        if (batch.FilterPrefixes.Count > 0)
+        {
+            var clauses = batch.FilterPrefixes
+                .Where(p => !string.IsNullOrWhiteSpace(p))
+                .Select(p => $"FullyQualifiedName~{EscapeFilterValue(p!)}")
+                .ToList();
 
-        var clauses = batch.FilterPrefixes
-            .Where(p => !string.IsNullOrWhiteSpace(p))
-            .Select(p => $"FullyQualifiedName~{EscapeFilterValue(p!)}")
-            .ToList();
+            if (clauses.Count > 0)
+                return string.Join("|", clauses);
+        }
 
-        if (clauses.Count == 0)
-            return null;
+        // Fallback: build filter from individual test names (display names)
+        // Use Name~ for display name matching
+        if (batch.Tests.Count > 0)
+        {
+            // Extract method names from display names for filtering
+            var testClauses = batch.Tests
+                .Where(t => !string.IsNullOrWhiteSpace(t))
+                .Select(t =>
+                {
+                    // Display name format: MethodName(params) - extract just method name
+                    var methodName = t.Split('(')[0];
+                    return $"Name~{EscapeFilterValue(methodName)}";
+                })
+                .Distinct()
+                .ToList();
 
-        return string.Join("|", clauses);
+            if (testClauses.Count > 0)
+                return string.Join("|", testClauses);
+        }
+
+        return null;
     }
 
     private static bool IsInterestingOutput(string line)
@@ -837,6 +916,10 @@ public class IsolateRunner
 
         var first = _baseTestArgs[0].ToLowerInvariant();
         if (first != "dotnet")
+            return false;
+
+        // If using .dll path, no need to build (already built)
+        if (_baseTestArgs.Any(arg => arg.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)))
             return false;
 
         return _baseTestArgs.Skip(1).Any(a => a.Equals("test", StringComparison.OrdinalIgnoreCase));
@@ -946,87 +1029,25 @@ public class IsolateRunner
 
     private async Task<List<string>> ListTestsAsync(string? filter)
     {
-        // Check if we have DLL files in the args (vstest mode)
+        // Get DLL files from args
         var dllFiles = _baseTestArgs
+            .Select(ExpandPath)
             .Where(arg => arg.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) && File.Exists(arg))
             .ToList();
 
-        if (dllFiles.Count > 0)
+        if (dllFiles.Count == 0)
         {
-            // Use structured discovery with vstest
-            return await ListTestsWithDiscoveryAsync(dllFiles, filter);
-        }
-        else
-        {
-            // Fall back to dotnet test --list-tests
-            return await ListTestsWithDotnetTestAsync(filter);
-        }
-    }
-
-    private async Task<List<string>> ListTestsWithDiscoveryAsync(List<string> dllFiles, string? filter)
-    {
-        var assemblies = await TestDiscovery.DiscoverTestsAsync(dllFiles);
-        var tests = new List<string>();
-
-        foreach (var assembly in assemblies)
-        {
-            foreach (var ns in assembly.Namespaces)
-            {
-                foreach (var cls in ns.Classes)
-                {
-                    foreach (var method in cls.Methods)
-                    {
-                        // Add the fully qualified name (namespace.class.method)
-                        tests.Add(method.FullyQualifiedName);
-                    }
-                }
-            }
+            Console.WriteLine("Error: No .dll test files found in arguments.");
+            Console.WriteLine("Please provide test DLL paths for vstest.");
+            return [];
         }
 
-        // Filter if specified
-        if (filter != null)
-        {
-            tests = tests.Where(t => t.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
-        }
+        // Use VSTest platform API for proper discovery with class names
+        var testFilter = TestFilter.Parse(filter);
+        var discoveredTests = await TestDiscovery.DiscoverTestsAsync(dllFiles, testFilter);
 
-        return tests;
-    }
-
-    private async Task<List<string>> ListTestsWithDotnetTestAsync(string? filter)
-    {
-        var args = _baseTestArgs.ToList();
-        args.Add("--list-tests");
-
-        // Don't pass filter to dotnet test --list-tests (it ignores it anyway)
-        // We'll filter locally instead
-
-        var output = await RunDotnetAsync(args, captureOutput: true, timeout: 120);
-
-        // Parse test names from output
-        var tests = new List<string>();
-        var inTestList = false;
-
-        foreach (var line in output.Split('\n'))
-        {
-            var trimmed = line.Trim();
-            if (trimmed.StartsWith("The following Tests are available:"))
-            {
-                inTestList = true;
-                continue;
-            }
-            if (inTestList && !string.IsNullOrWhiteSpace(trimmed) && !trimmed.StartsWith("Test run for"))
-            {
-                tests.Add(trimmed);
-            }
-        }
-
-        // Filter locally if a filter is specified
-        if (filter != null)
-        {
-            tests = tests.Where(t => t.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
-        }
-
-        return tests;
+        // Return FQN for test execution filtering (Namespace.Class.Method)
+        return discoveredTests.Select(t => t.FullyQualifiedName).ToList();
     }
 
     private async Task<string> RunDotnetAsync(List<string> args, bool captureOutput, int timeout)
@@ -1149,11 +1170,11 @@ public class IsolateRunner
                 break;
             }
 
-            if (progressLogger != null &&
-                heartbeatSeconds > 0 &&
+            // Show heartbeat even when suppressing output so user knows it's still running
+            if (heartbeatSeconds > 0 &&
                 (DateTime.UtcNow - lastHeartbeat).TotalSeconds > heartbeatSeconds)
             {
-                progressLogger($"... still running ({overallStopwatch.Elapsed:mm\\:ss}), last output {(DateTime.UtcNow - lastOutput).TotalSeconds:F0}s ago");
+                Console.WriteLine($"    ... still running ({overallStopwatch.Elapsed:mm\\:ss}), last output {(DateTime.UtcNow - lastOutput).TotalSeconds:F0}s ago");
                 lastHeartbeat = DateTime.UtcNow;
             }
         }
@@ -1176,7 +1197,29 @@ public class IsolateRunner
     /// </summary>
     private bool IsVsTestMode()
     {
-        return _baseTestArgs.Any(arg => arg.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) && File.Exists(arg));
+        foreach (var arg in _baseTestArgs)
+        {
+            if (arg.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+            {
+                var expandedPath = ExpandPath(arg);
+                if (File.Exists(expandedPath))
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Expands ~ to home directory in paths
+    /// </summary>
+    private static string ExpandPath(string path)
+    {
+        if (path.StartsWith("~/") || path == "~")
+        {
+            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            return path == "~" ? home : Path.Combine(home, path[2..]);
+        }
+        return path;
     }
 
     /// <summary>
@@ -1201,19 +1244,28 @@ public class IsolateRunner
         }
         else if (result.Succeeded)
         {
-            // Batch succeeded
-            AnsiConsole.MarkupLine($"[green]✓[/] {batch.Label} ([green]{result.Passed.Count} passed[/])");
+            // Batch succeeded - if no passed tests recorded, assume all passed
+            var passedCount = result.Passed.Count > 0 ? result.Passed.Count : result.TotalTests;
+            AnsiConsole.MarkupLine($"[green]✓[/] {batch.Label} ([green]{passedCount}/{result.TotalTests} passed[/])");
         }
         else if (result.Hung)
         {
             // Batch hung - will be isolated
             var hungTests = result.TimedOut.Count > 0 ? result.TimedOut.Count : 1;
-            AnsiConsole.MarkupLine($"[red]⏱[/] {batch.Label} ([red]{hungTests} hung[/], [green]{result.Passed.Count} passed[/]) - isolating...");
+            AnsiConsole.MarkupLine($"[red]⏱[/] {batch.Label} ([red]{hungTests} hung[/], [green]{result.Passed.Count} passed[/], [dim]{result.TotalTests} total[/]) - isolating...");
         }
         else
         {
-            // Batch failed
-            AnsiConsole.MarkupLine($"[red]✗[/] {batch.Label} ([red]{result.Failed.Count} failed[/], [green]{result.Passed.Count} passed[/])");
+            // Batch failed - show details
+            var details = new List<string>();
+            if (result.Passed.Count > 0) details.Add($"[green]{result.Passed.Count} passed[/]");
+            if (result.Failed.Count > 0) details.Add($"[red]{result.Failed.Count} failed[/]");
+            if (result.TimedOut.Count > 0) details.Add($"[orange1]{result.TimedOut.Count} timed out[/]");
+
+            var detailsStr = details.Count > 0 ? string.Join(", ", details) : "[dim]no results[/]";
+            var reasonStr = result.Reason != null ? $" - [dim]{result.Reason}[/]" : "";
+
+            AnsiConsole.MarkupLine($"[red]✗[/] {batch.Label} ({detailsStr}, [dim]{result.TotalTests} total[/]){reasonStr}");
         }
     }
 }
