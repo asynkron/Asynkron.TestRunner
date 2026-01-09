@@ -698,6 +698,10 @@ public class IsolateRunner
                 // Add TRX logger for results parsing
                 args.Add("/logger:trx");
                 args.Add($"/ResultsDirectory:{tempDir}");
+                // Enable NUnit parallel workers (use all available processors)
+                var workerCount = Environment.ProcessorCount;
+                args.Add("--");
+                args.Add($"NUnit.NumberOfTestWorkers={workerCount}");
             }
             else
             {
