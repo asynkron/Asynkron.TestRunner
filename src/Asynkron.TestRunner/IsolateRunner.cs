@@ -220,13 +220,14 @@ public class IsolateRunner
 
         foreach (var batch in batches)
         {
-            Console.WriteLine($"[{index}/{batches.Count}] {batch.Label} ({batch.Tests.Count} tests)");
+            AnsiConsole.Markup($"[dim]\\[{index}/{batches.Count}][/] ");
+            DisplayBatchProgress(batch);
 
-            var result = await RunBatchAsync(batch);
+            var result = await RunBatchAsync(batch, suppressOutput: true);
             results.Add(result);
 
-            PrintBatchResult(result, "  ");
-            Console.WriteLine();
+            AnsiConsole.Markup($"[dim]\\[{index}/{batches.Count}][/] ");
+            DisplayBatchProgress(batch, result);
             index++;
         }
 
@@ -243,8 +244,8 @@ public class IsolateRunner
         var semaphore = new SemaphoreSlim(_maxParallelBatches, _maxParallelBatches);
         var consoleLock = new object();
 
-        Console.WriteLine($"Starting parallel execution of {batches.Count} batches...");
-        Console.WriteLine();
+        AnsiConsole.MarkupLine($"[dim]Starting parallel execution of {batches.Count} batches...[/]");
+        AnsiConsole.WriteLine();
 
         var tasks = batches.Select((batch, index) => Task.Run(async () =>
         {
@@ -253,7 +254,8 @@ public class IsolateRunner
             {
                 lock (consoleLock)
                 {
-                    Console.WriteLine($"[{index + 1}/{batches.Count}] Starting: {batch.Label} ({batch.Tests.Count} tests)");
+                    AnsiConsole.Markup($"[dim]\\[{index + 1}/{batches.Count}][/] ");
+                    DisplayBatchProgress(batch);
                 }
 
                 var result = await RunBatchAsync(batch, suppressOutput: true);
@@ -262,8 +264,8 @@ public class IsolateRunner
                 var completed = Interlocked.Increment(ref completedCount);
                 lock (consoleLock)
                 {
-                    var status = result.Succeeded ? "✓" : result.Hung ? "⏱" : "✗";
-                    Console.WriteLine($"[{completed}/{batches.Count}] {status} Completed: {batch.Label}");
+                    AnsiConsole.Markup($"[dim]\\[{completed}/{batches.Count}][/] ");
+                    DisplayBatchProgress(batch, result);
                 }
             }
             finally
@@ -410,18 +412,20 @@ public class IsolateRunner
         {
             if (_completedBatches.Contains(childBatch.Label))
             {
-                Console.WriteLine($"{indent}    Skipping {childBatch.Label} (already processed)");
+                AnsiConsole.MarkupLine($"{indent}    [dim]Skipping {childBatch.Label} (already processed)[/]");
                 continue;
             }
 
-            Console.WriteLine($"{indent}    Testing {childBatch.Label} ({childBatch.Tests.Count} tests)...");
+            AnsiConsole.Markup($"{indent}    ");
+            DisplayBatchProgress(childBatch);
 
-            var result = await RunBatchAsync(childBatch);
+            var result = await RunBatchAsync(childBatch, suppressOutput: true);
             _completedBatches.Add(childBatch.Label);
 
             if (result.Succeeded)
             {
-                Console.WriteLine($"{indent}    ✓ {childBatch.Label} passed - branch is clean");
+                AnsiConsole.Markup($"{indent}    ");
+                DisplayBatchProgress(childBatch, result);
                 continue;
             }
 
@@ -431,7 +435,7 @@ public class IsolateRunner
                 {
                     // Single test that hangs - we found it!
                     var hangingTest = childBatch.Tests[0];
-                    Console.WriteLine($"{indent}    ⏱ ISOLATED: {hangingTest}");
+                    AnsiConsole.MarkupLine($"{indent}    [red]⏱ ISOLATED:[/] {hangingTest}");
                     if (!_isolatedHangingTests.Contains(hangingTest))
                         _isolatedHangingTests.Add(hangingTest);
                 }
@@ -439,20 +443,23 @@ public class IsolateRunner
                 {
                     // dotnet test told us exactly which test timed out
                     var hangingTest = result.TimedOut.First();
-                    Console.WriteLine($"{indent}    ⏱ ISOLATED: {hangingTest}");
+                    AnsiConsole.MarkupLine($"{indent}    [red]⏱ ISOLATED:[/] {hangingTest}");
                     if (!_isolatedHangingTests.Contains(hangingTest))
                         _isolatedHangingTests.Add(hangingTest);
                 }
                 else
                 {
                     // Need to drill deeper
+                    AnsiConsole.Markup($"{indent}    ");
+                    DisplayBatchProgress(childBatch, result);
                     await DrillDownHangingBatchAsync(result, depth + 1);
                 }
             }
             else
             {
                 // Failed but not hanging - report but don't drill
-                Console.WriteLine($"{indent}    ✗ {childBatch.Label} failed ({result.Failed.Count} failures)");
+                AnsiConsole.Markup($"{indent}    ");
+                DisplayBatchProgress(childBatch, result);
             }
         }
     }
@@ -647,14 +654,29 @@ public class IsolateRunner
 
         try
         {
+            var isVsTest = IsVsTestMode();
             var args = _baseTestArgs.ToList();
             RemoveFilterArgs(args);
             EnsureReleaseConfiguration(args);
-            AddNoBuild(args);
+
+            // vstest doesn't support --no-build
+            if (!isVsTest)
+            {
+                AddNoBuild(args);
+            }
 
             args.Add("--logger");
             args.Add("trx");
-            args.Add("--results-directory");
+
+            // vstest uses different flag names
+            if (isVsTest)
+            {
+                args.Add("--ResultsDirectory");
+            }
+            else
+            {
+                args.Add("--results-directory");
+            }
             args.Add(tempDir);
 
             // Calculate timeout based on strategy
@@ -671,7 +693,15 @@ public class IsolateRunner
             var filter = BuildFilter(batch);
             if (!string.IsNullOrWhiteSpace(filter))
             {
-                args.Add("--filter");
+                // vstest uses --testCaseFilter, dotnet test uses --filter
+                if (isVsTest)
+                {
+                    args.Add("--testCaseFilter");
+                }
+                else
+                {
+                    args.Add("--filter");
+                }
                 args.Add(filter);
             }
 
@@ -739,7 +769,8 @@ public class IsolateRunner
         for (var i = 0; i < args.Count; i++)
         {
             var arg = args[i];
-            if (arg.Equals("--filter", StringComparison.OrdinalIgnoreCase))
+            if (arg.Equals("--filter", StringComparison.OrdinalIgnoreCase) ||
+                arg.Equals("--testCaseFilter", StringComparison.OrdinalIgnoreCase))
             {
                 if (i + 1 < args.Count)
                 {
@@ -749,7 +780,8 @@ public class IsolateRunner
                 args.RemoveAt(i);
                 i--;
             }
-            else if (arg.StartsWith("--filter", StringComparison.OrdinalIgnoreCase))
+            else if (arg.StartsWith("--filter", StringComparison.OrdinalIgnoreCase) ||
+                     arg.StartsWith("--testCaseFilter", StringComparison.OrdinalIgnoreCase))
             {
                 args.RemoveAt(i);
                 i--;
@@ -1137,5 +1169,51 @@ public class IsolateRunner
         }
 
         return (process.ExitCode, killedByGuard, guardReason);
+    }
+
+    /// <summary>
+    /// Detects if we're using vstest (has .dll files in args) vs dotnet test
+    /// </summary>
+    private bool IsVsTestMode()
+    {
+        return _baseTestArgs.Any(arg => arg.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) && File.Exists(arg));
+    }
+
+    /// <summary>
+    /// Gets the test DLL files from args (for vstest mode)
+    /// </summary>
+    private List<string> GetTestDllFiles()
+    {
+        return _baseTestArgs
+            .Where(arg => arg.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) && File.Exists(arg))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Displays clean progress for a batch execution (tree-based)
+    /// </summary>
+    private static void DisplayBatchProgress(TestBatch batch, BatchRunResult? result = null)
+    {
+        if (result == null)
+        {
+            // Starting batch
+            AnsiConsole.MarkupLine($"[yellow]►[/] {batch.Label} ([dim]{batch.Tests.Count} tests[/])");
+        }
+        else if (result.Succeeded)
+        {
+            // Batch succeeded
+            AnsiConsole.MarkupLine($"[green]✓[/] {batch.Label} ([green]{result.Passed.Count} passed[/])");
+        }
+        else if (result.Hung)
+        {
+            // Batch hung - will be isolated
+            var hungTests = result.TimedOut.Count > 0 ? result.TimedOut.Count : 1;
+            AnsiConsole.MarkupLine($"[red]⏱[/] {batch.Label} ([red]{hungTests} hung[/], [green]{result.Passed.Count} passed[/]) - isolating...");
+        }
+        else
+        {
+            // Batch failed
+            AnsiConsole.MarkupLine($"[red]✗[/] {batch.Label} ([red]{result.Failed.Count} failed[/], [green]{result.Passed.Count} passed[/])");
+        }
     }
 }
