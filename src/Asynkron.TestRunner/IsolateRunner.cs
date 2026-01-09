@@ -798,16 +798,33 @@ public class IsolateRunner
                     reason = guardReason ?? "Batch terminated by guard";
             }
 
-            var hadResults = results.Count > 0;
+            // Use live console output counts as fallback if TRX has no results
+            var hadResults = results.Count > 0 && (passed.Count > 0 || failed.Count > 0);
+            var hadLiveResults = testsPassed > 0 || testsFailed > 0;
 
-            if (!hadResults)
+            if (!hadResults && hadLiveResults)
+            {
+                // TRX empty but we saw live output - trust the live counts
+                // Create synthetic pass count based on live output
+                hadResults = true;
+                for (var i = 0; i < testsPassed; i++)
+                {
+                    passed.Add($"live_test_{i}");
+                }
+                for (var i = 0; i < testsFailed; i++)
+                {
+                    failed.Add($"live_failed_{i}");
+                }
+            }
+
+            if (!hadResults && !hadLiveResults)
             {
                 var cmdName = isVsTest ? "dotnet vstest" : "dotnet test";
                 reason = exitCode != 0
                     ? $"{cmdName} exited {exitCode} with no results (filter mismatch?)"
                     : $"{cmdName} produced no results";
             }
-            else if (exitCode != 0 && failed.Count == 0 && timedOut.Count == 0)
+            else if (exitCode != 0 && failed.Count == 0 && timedOut.Count == 0 && !hung)
             {
                 reason = $"exit code {exitCode} despite no failed/hanging tests";
             }
