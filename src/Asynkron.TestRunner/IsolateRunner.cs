@@ -159,7 +159,7 @@ public class IsolateRunner
         }
 
         Console.WriteLine("Initial isolation complete.");
-        Console.WriteLine($"Batches: {results.Count}, Passed: {passedBatches}, Failed: {failingGroups.Count}, Hung: {hangingGroups.Count}");
+        Console.WriteLine($"Batches: {results.Count}, Completed: {passedBatches}, Failed: {failingGroups.Count}, Hung: {hangingGroups.Count}");
         Console.WriteLine();
 
         // Recursively drill down into hanging groups to isolate individual tests
@@ -736,8 +736,7 @@ public class IsolateRunner
                     // Show first few failures so user can diagnose
                     if (testsFailed <= 5)
                     {
-                        var currentTotal = testsPassed + testsFailed + testsHung;
-                        Console.WriteLine($"    ✗ [{currentTotal}/{batch.Tests.Count}] {trimmed}");
+                        Console.WriteLine($"    ✗ {trimmed}");
                     }
                 }
                 else if (trimmed.StartsWith("Skipped ", StringComparison.OrdinalIgnoreCase))
@@ -759,7 +758,7 @@ public class IsolateRunner
 
                 if (shouldPrint && total > 0)
                 {
-                    Console.WriteLine($"    ... [{total}/{batch.Tests.Count}] passed: {testsPassed}, failed: {testsFailed}, hanging: {testsHung}");
+                    Console.WriteLine($"    ... passed: {testsPassed}, failed: {testsFailed}, hanging: {testsHung}");
                     lastProgressUpdate = DateTime.UtcNow;
                     lastPrintedTotal = total;
                 }
