@@ -1,3 +1,4 @@
+using Asynkron.TestRunner.Models;
 using Spectre.Console;
 
 namespace Asynkron.TestRunner;
@@ -13,7 +14,8 @@ public class TestTreeNode
 
 public class TestTree
 {
-    private static readonly char[] NameSeparators = ['.', '_', ','];
+    // Use only dot separator for namespace.class.method structure
+    private static readonly char[] NameSeparators = ['.'];
 
     private readonly TestTreeNode _root = new() { Name = "Tests", FullPath = "" };
 
@@ -24,6 +26,30 @@ public class TestTree
         foreach (var testName in testNames)
         {
             AddTest(testName);
+        }
+
+        // Calculate total counts
+        CalculateTotalCounts(_root);
+    }
+
+    /// <summary>
+    /// Adds tests from structured descriptors
+    /// </summary>
+    public void AddTestsFromDescriptors(IEnumerable<TestAssemblyDescriptor> assemblies)
+    {
+        foreach (var assembly in assemblies)
+        {
+            foreach (var ns in assembly.Namespaces)
+            {
+                foreach (var cls in ns.Classes)
+                {
+                    foreach (var method in cls.Methods)
+                    {
+                        // Use the fully qualified name (namespace.class.method)
+                        AddTest(method.FullyQualifiedName);
+                    }
+                }
+            }
         }
 
         // Calculate total counts

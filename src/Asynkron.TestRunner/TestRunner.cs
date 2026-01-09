@@ -237,6 +237,42 @@ public class TestRunner
 
     private async Task<List<string>> DiscoverTestsAsync(string[] args, string? filter)
     {
+        // Check if we have DLL files in the args (vstest mode)
+        var dllFiles = args
+            .Where(arg => arg.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) && File.Exists(arg))
+            .ToList();
+
+        if (dllFiles.Count > 0)
+        {
+            // Use structured discovery with vstest
+            var assemblies = await TestDiscovery.DiscoverTestsAsync(dllFiles);
+            var discoveredTests = new List<string>();
+
+            foreach (var assembly in assemblies)
+            {
+                foreach (var ns in assembly.Namespaces)
+                {
+                    foreach (var cls in ns.Classes)
+                    {
+                        foreach (var method in cls.Methods)
+                        {
+                            // Add the fully qualified name (namespace.class.method)
+                            discoveredTests.Add(method.FullyQualifiedName);
+                        }
+                    }
+                }
+            }
+
+            // Filter if specified
+            if (filter != null)
+            {
+                discoveredTests = discoveredTests.Where(t => t.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
+            }
+
+            return discoveredTests;
+        }
+
+        // Fall back to dotnet test --list-tests
         var listArgs = args.ToList();
         listArgs.Add("--list-tests");
 

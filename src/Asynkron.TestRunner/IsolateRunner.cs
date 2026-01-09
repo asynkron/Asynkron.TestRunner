@@ -914,6 +914,54 @@ public class IsolateRunner
 
     private async Task<List<string>> ListTestsAsync(string? filter)
     {
+        // Check if we have DLL files in the args (vstest mode)
+        var dllFiles = _baseTestArgs
+            .Where(arg => arg.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) && File.Exists(arg))
+            .ToList();
+
+        if (dllFiles.Count > 0)
+        {
+            // Use structured discovery with vstest
+            return await ListTestsWithDiscoveryAsync(dllFiles, filter);
+        }
+        else
+        {
+            // Fall back to dotnet test --list-tests
+            return await ListTestsWithDotnetTestAsync(filter);
+        }
+    }
+
+    private async Task<List<string>> ListTestsWithDiscoveryAsync(List<string> dllFiles, string? filter)
+    {
+        var assemblies = await TestDiscovery.DiscoverTestsAsync(dllFiles);
+        var tests = new List<string>();
+
+        foreach (var assembly in assemblies)
+        {
+            foreach (var ns in assembly.Namespaces)
+            {
+                foreach (var cls in ns.Classes)
+                {
+                    foreach (var method in cls.Methods)
+                    {
+                        // Add the fully qualified name (namespace.class.method)
+                        tests.Add(method.FullyQualifiedName);
+                    }
+                }
+            }
+        }
+
+        // Filter if specified
+        if (filter != null)
+        {
+            tests = tests.Where(t => t.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+
+        return tests;
+    }
+
+    private async Task<List<string>> ListTestsWithDotnetTestAsync(string? filter)
+    {
         var args = _baseTestArgs.ToList();
         args.Add("--list-tests");
 

@@ -1,0 +1,82 @@
+[
+  {
+    "MethodName": "Expressions_class_dstr",
+    "TestCaseCount": 3840
+  },
+  {
+    "MethodName": "Statements_class_dstr",
+    "TestCaseCount": 3840
+  },
+  {
+    "MethodName": "Statements_forAwaitOf",
+    "TestCaseCount": 2431
+  },
+  {
+    "MethodName": "Object_defineProperty",
+    "TestCaseCount": 2250
+  },
+  {
+    "MethodName": "Statements_class_elements",
+    "TestCaseCount": 2088
+  },
+  {
+    "MethodName": "Expressions_class_elements",
+    "TestCaseCount": 1881
+  },
+  {
+    "MethodName": "Object_defineProperties",
+    "TestCaseCount": 1264
+  },
+  {
+    "MethodName": "Expressions_object_dstr",
+    "TestCaseCount": 1122
+  },
+  {
+    "MethodName": "Statements_forOf_dstr",
+    "TestCaseCount": 1095
+  },
+  {
+    "MethodName": "RegExp",
+    "TestCaseCount": 976
+  },
+  {
+    "MethodName": "RegExp_propertyEscapes_generated",
+    "TestCaseCount": 862
+  },
+  {
+    "MethodName": "Expressions_compoundAssignment",
+    "TestCaseCount": 786
+  },
+  {
+    "MethodName": "Expressions_asyncGenerator_dstr",
+    "TestCaseCount": 744
+  },
+  {
+    "MethodName": "Object_create",
+    "TestCaseCount": 640
+  },
+  {
+    "MethodName": "Expressions_assignment_dstr",
+    "TestCaseCount": 640
+  },
+  {
+    "MethodName": "Object_getOwnPropertyDescriptor",
+    "TestCaseCount": 620
+  },
+  {
+    "MethodName": "Expressions_assignmenttargettype",
+    "TestCaseCount": 619
+  },
+  {
+    "MethodName": "Expressions_dynamicImport_syntax_invalid",
+    "TestCaseCount": 594
+  },
+  {
+    "MethodName": "Expressions_object",
+    "TestCaseCount": 573
+  },
+  {
+    "MethodName": "Statements_for_dstr",
+    "TestCaseCount": 570
+  }
+]
