@@ -55,6 +55,18 @@ static async Task<int> RunAsync(string[] args)
         return await HandleIsolateAsync(args);
     }
 
+    // Handle "serve" subcommand - HTTP server with UI
+    if (args.Length > 0 && args[0].Equals("serve", StringComparison.OrdinalIgnoreCase))
+    {
+        return await HandleServeAsync(args);
+    }
+
+    // Handle "mcp" subcommand - MCP server (proxies to HTTP server)
+    if (args.Length > 0 && args[0].Equals("mcp", StringComparison.OrdinalIgnoreCase))
+    {
+        return await HandleMcpAsync(args);
+    }
+
     // Handle "regressions" subcommand
     if (args.Length > 0 && args[0].Equals("regressions", StringComparison.OrdinalIgnoreCase))
     {
@@ -80,6 +92,8 @@ static async Task<int> HandleRunAsync(string[] args)
     var timeout = ParseTimeout(args);
     var quiet = ParseQuiet(args);
     var workers = ParseWorkers(args) ?? 1;
+    var verbose = ParseVerbose(args);
+    var logFile = ParseLogFile(args);
 
     if (assemblyPaths.Count == 0)
     {
@@ -89,8 +103,75 @@ static async Task<int> HandleRunAsync(string[] args)
     }
 
     var store = new ResultStore();
-    var runner = new TestRunner(store, timeout, filter, quiet, workers);
+    var runner = new TestRunner(store, timeout, filter, quiet, workers, verbose, logFile);
     return await runner.RunTestsAsync(assemblyPaths.ToArray());
+}
+
+static bool ParseVerbose(string[] args)
+{
+    return args.Any(a =>
+        a.Equals("--verbose", StringComparison.OrdinalIgnoreCase) ||
+        a.Equals("-v", StringComparison.OrdinalIgnoreCase));
+}
+
+static string? ParseLogFile(string[] args)
+{
+    for (var i = 0; i < args.Length; i++)
+    {
+        if (args[i].Equals("--log", StringComparison.OrdinalIgnoreCase))
+        {
+            if (i + 1 < args.Length)
+                return args[i + 1];
+            // No argument provided, use default
+            return "testrunner.log";
+        }
+    }
+    return null;
+}
+
+static async Task<int> HandleServeAsync(string[] args)
+{
+    var port = ParsePort(args) ?? 5123;
+
+    var cts = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, e) =>
+    {
+        e.Cancel = true;
+        cts.Cancel();
+    };
+
+    var server = new HttpServer(port);
+    await server.RunAsync(cts.Token);
+    return 0;
+}
+
+static async Task<int> HandleMcpAsync(string[] args)
+{
+    var port = ParsePort(args) ?? 5123;
+
+    var cts = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, e) =>
+    {
+        e.Cancel = true;
+        cts.Cancel();
+    };
+
+    var mcp = new McpServer(port);
+    await mcp.RunAsync(cts.Token);
+    return 0;
+}
+
+static int? ParsePort(string[] args)
+{
+    for (var i = 0; i < args.Length; i++)
+    {
+        if (args[i].Equals("--port", StringComparison.OrdinalIgnoreCase))
+        {
+            if (i + 1 < args.Length && int.TryParse(args[i + 1], out var port))
+                return port;
+        }
+    }
+    return null;
 }
 
 static int? ParseWorkers(string[] args)
@@ -418,6 +499,8 @@ static void PrintUsage()
           testrunner run <assembly.dll> [options]        Run tests in assembly
           testrunner list <assembly.dll> [options]       List tests without running
           testrunner isolate <assembly.dll> [options]    Find hanging tests
+          testrunner serve [--port N]                    Start HTTP server with UI (for MCP)
+          testrunner mcp [--port N]                      Start MCP server (connects to serve)
           testrunner stats                               Show test history
           testrunner regressions                         Compare last 2 runs
           testrunner clear                               Clear test history
@@ -428,6 +511,8 @@ static void PrintUsage()
           -w, --workers [N]            Run N worker processes in parallel (default: 1)
           -p, --parallel [N]           Run N batches in parallel (default: 1, or CPU count)
           -q, --quiet                  Suppress verbose output
+          -v, --verbose                Show diagnostic logs on stderr
+          --log <file>                 Write diagnostic logs to file
           -h, --help                   Show this help
 
         Examples:

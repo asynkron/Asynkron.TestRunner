@@ -10,7 +10,9 @@ namespace Asynkron.TestRunner;
 public class LiveDisplay
 {
     private static int PanelWidth => Math.Max(80, Console.WindowWidth - 2);
+    private static int PanelHeight => Math.Max(20, Console.WindowHeight - 2);
     private static int ContentWidth => PanelWidth - 4; // Account for panel borders
+    private static int ContentHeight => PanelHeight - 6; // Account for panel borders, header, stats, progress bar
 
     private readonly Stopwatch _stopwatch = Stopwatch.StartNew();
     private readonly object _lock = new();
@@ -30,11 +32,16 @@ public class LiveDisplay
     private int _timeoutSeconds = 30;
     private readonly Dictionary<int, WorkerState> _workerStates = new();
 
+    private enum SlotStatus { Pending, Passed, Failed, Hanging, Crashed }
+
     private class WorkerState
     {
         public DateTime LastActivity { get; set; } = DateTime.UtcNow;
         public bool IsRestarting { get; set; }
         public bool IsComplete { get; set; }
+        public int BatchOffset { get; set; }
+        public int BatchSize { get; set; }
+        public List<SlotStatus> CompletedResults { get; } = new();
     }
 
     public void SetTotal(int total)
@@ -65,6 +72,54 @@ public class LiveDisplay
     public void SetTimeout(int seconds)
     {
         lock (_lock) _timeoutSeconds = seconds;
+    }
+
+    public void SetWorkerBatch(int workerIndex, int offset, int size)
+    {
+        lock (_lock)
+        {
+            if (_workerStates.TryGetValue(workerIndex, out var state))
+            {
+                state.BatchOffset = offset;
+                state.BatchSize = size;
+            }
+        }
+    }
+
+    public void WorkerTestPassed(int workerIndex)
+    {
+        lock (_lock)
+        {
+            if (_workerStates.TryGetValue(workerIndex, out var state))
+                state.CompletedResults.Add(SlotStatus.Passed);
+        }
+    }
+
+    public void WorkerTestFailed(int workerIndex)
+    {
+        lock (_lock)
+        {
+            if (_workerStates.TryGetValue(workerIndex, out var state))
+                state.CompletedResults.Add(SlotStatus.Failed);
+        }
+    }
+
+    public void WorkerTestHanging(int workerIndex)
+    {
+        lock (_lock)
+        {
+            if (_workerStates.TryGetValue(workerIndex, out var state))
+                state.CompletedResults.Add(SlotStatus.Hanging);
+        }
+    }
+
+    public void WorkerTestCrashed(int workerIndex)
+    {
+        lock (_lock)
+        {
+            if (_workerStates.TryGetValue(workerIndex, out var state))
+                state.CompletedResults.Add(SlotStatus.Crashed);
+        }
     }
 
     public void WorkerActivity(int workerIndex)
@@ -215,10 +270,18 @@ public class LiveDisplay
                 .BorderColor(Color.Grey)
                 .Expand();
 
-            // Wrap in a fixed-width container
+            // Wrap in a fixed-size container (full terminal width and height)
             var table = new Table().NoBorder().HideHeaders();
             table.AddColumn(new TableColumn("").Width(PanelWidth));
             table.AddRow(panel);
+
+            // Add padding rows to fill terminal height
+            var currentHeight = PanelHeight;
+            var paddingNeeded = Console.WindowHeight - currentHeight - 1;
+            for (var i = 0; i < paddingNeeded; i++)
+            {
+                table.AddEmptyRow();
+            }
 
             return table;
         }
@@ -228,23 +291,132 @@ public class LiveDisplay
     {
         if (total == 0) return new Text("");
 
-        var percentage = Math.Min(1.0, (double)completed / total);
         var barWidth = ContentWidth - 7; // Leave room for " 100 %"
-        var filled = (int)(percentage * barWidth);
-        var empty = barWidth - filled;
+        var percentage = Math.Min(1.0, (double)completed / total);
 
-        var color = _failed > 0 || _crashed > 0 || _hanging > 0 ? "red" : "green";
-        var bar = $"[{color}]{new string('█', filled)}[/][dim]{new string('░', empty)}[/]";
+        // Collect all results in order across all workers
+        var allResults = new List<SlotStatus>();
+        if (_workerCount > 1 && _workerStates.Count > 0)
+        {
+            foreach (var (_, state) in _workerStates.OrderBy(kv => kv.Key))
+            {
+                // Pad with pending for incomplete tests in this worker's batch
+                var workerResults = new List<SlotStatus>(state.CompletedResults);
+                while (workerResults.Count < state.BatchSize)
+                    workerResults.Add(SlotStatus.Pending);
+                allResults.AddRange(workerResults);
+            }
+        }
+        else
+        {
+            // Single worker: synthesize from counts (not ideal but works)
+            allResults.AddRange(Enumerable.Repeat(SlotStatus.Passed, _passed));
+            allResults.AddRange(Enumerable.Repeat(SlotStatus.Failed, _failed));
+            allResults.AddRange(Enumerable.Repeat(SlotStatus.Hanging, _hanging));
+            allResults.AddRange(Enumerable.Repeat(SlotStatus.Crashed, _crashed));
+            while (allResults.Count < total)
+                allResults.Add(SlotStatus.Pending);
+        }
+
+        // Use gradient heat map with half-block characters (2 pixels per char)
+        var bar = RenderGradientHeatMap(allResults, total, barWidth);
 
         return new Markup($"{bar} [dim]{percentage:P0}[/]");
     }
+
+    private static string RenderGradientHeatMap(List<SlotStatus> results, int total, int barWidth)
+    {
+        var bar = new System.Text.StringBuilder();
+        var pixelCount = barWidth * 2; // 2 horizontal pixels per character
+
+        for (var i = 0; i < barWidth; i++)
+        {
+            // Calculate colors for left and right pixels
+            var leftPixelIdx = i * 2;
+            var rightPixelIdx = i * 2 + 1;
+
+            var leftColor = CalculatePixelColor(results, total, leftPixelIdx, pixelCount);
+            var rightColor = CalculatePixelColor(results, total, rightPixelIdx, pixelCount);
+
+            // Use right half block: ▐
+            // Background = left color, Foreground = right color
+            bar.Append($"[rgb({rightColor.R},{rightColor.G},{rightColor.B}) on rgb({leftColor.R},{leftColor.G},{leftColor.B})]▐[/]");
+        }
+
+        return bar.ToString();
+    }
+
+    private static (int R, int G, int B) CalculatePixelColor(List<SlotStatus> results, int total, int pixelIdx, int pixelCount)
+    {
+        // Map pixel to range of tests
+        var startIdx = (int)((double)pixelIdx / pixelCount * total);
+        var endIdx = (int)((double)(pixelIdx + 1) / pixelCount * total);
+        if (endIdx <= startIdx) endIdx = startIdx + 1;
+
+        // Count statuses in this range
+        int passed = 0, failed = 0, hanging = 0, crashed = 0, pending = 0;
+        for (var j = startIdx; j < endIdx && j < results.Count; j++)
+        {
+            switch (results[j])
+            {
+                case SlotStatus.Passed: passed++; break;
+                case SlotStatus.Failed: failed++; break;
+                case SlotStatus.Hanging: hanging++; break;
+                case SlotStatus.Crashed: crashed++; break;
+                default: pending++; break;
+            }
+        }
+        // Count any indices beyond results as pending
+        pending += Math.Max(0, endIdx - results.Count);
+
+        var rangeSize = endIdx - startIdx;
+        if (rangeSize == 0) return (40, 40, 40); // dim grey for empty
+
+        // If all pending, return dim
+        if (pending == rangeSize) return (60, 60, 60);
+
+        // Calculate ratios (excluding pending from the denominator)
+        var completed = passed + failed + hanging + crashed;
+        if (completed == 0) return (60, 60, 60);
+
+        var passRatio = (double)passed / completed;
+        var failRatio = (double)failed / completed;
+        var crashRatio = (double)crashed / completed;
+        var hangRatio = (double)hanging / completed;
+
+        // Base color: interpolate green (pass) to red (fail)
+        // Green: (0, 200, 0), Red: (200, 0, 0)
+        var r = (int)(failRatio * 220 + crashRatio * 180);
+        var g = (int)(passRatio * 220);
+        var b = (int)(crashRatio * 200 + hangRatio * 150); // Blue tint for crashes/hangs
+
+        // Clamp values
+        r = Math.Clamp(r, 0, 255);
+        g = Math.Clamp(g, 0, 255);
+        b = Math.Clamp(b, 0, 255);
+
+        // Boost minimum brightness if we have results
+        if (r < 40 && g < 40 && b < 40)
+        {
+            r = g = b = 60;
+        }
+
+        return (r, g, b);
+    }
+
+    private static readonly string[] SpinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
     private IRenderable CreateRunningSection()
     {
         var lines = new List<IRenderable>();
         var textWidth = ContentWidth - 4; // Leave room for status icon and spacing
-        const int minLines = 5; // Minimum lines to prevent panel shrinking
 
+        // Dynamic sizing based on terminal height
+        var availableLines = ContentHeight - (_workerCount > 1 ? 2 : 0); // Reserve space for worker bar if needed
+        var maxRunningLines = Math.Max(8, availableLines - 2); // Leave room for last completed + overflow message
+        var minLines = availableLines; // Fill entire available space
+
+        // Show last completed test
         if (_lastCompleted != null && _lastStatus != null)
         {
             lines.Add(new Markup($"{_lastStatus} {Markup.Escape(Truncate(_lastCompleted, textWidth))}"));
@@ -252,14 +424,19 @@ public class LiveDisplay
 
         if (_running.Count > 0)
         {
-            var runningList = _running.Take(3).ToList();
-            foreach (var test in runningList)
+            var runningList = _running.OrderBy(x => x).Take(maxRunningLines).ToList();
+            var baseFrame = (int)(_stopwatch.ElapsedMilliseconds / 80); // Cycle every 80ms
+
+            for (var i = 0; i < runningList.Count; i++)
             {
-                lines.Add(new Markup($"[dim]► {Markup.Escape(Truncate(test, textWidth))}[/]"));
+                var test = runningList[i];
+                var spinner = SpinnerFrames[(baseFrame + i) % SpinnerFrames.Length];
+                lines.Add(new Markup($"[cyan]{spinner}[/] [dim]{Markup.Escape(Truncate(test, textWidth))}[/]"));
             }
-            if (_running.Count > 3)
+
+            if (_running.Count > maxRunningLines)
             {
-                lines.Add(new Markup($"[dim]  ...and {_running.Count - 3} more running[/]"));
+                lines.Add(new Markup($"[dim]  ...and {_running.Count - maxRunningLines} more running[/]"));
             }
         }
 
@@ -268,7 +445,7 @@ public class LiveDisplay
             lines.Add(new Markup("[dim]Waiting for tests...[/]"));
         }
 
-        // Pad to minimum height to prevent flickering
+        // Pad to fill available height to prevent flickering
         while (lines.Count < minLines)
         {
             lines.Add(new Text(""));
