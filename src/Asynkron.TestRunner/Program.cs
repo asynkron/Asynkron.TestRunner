@@ -1,5 +1,17 @@
 using Asynkron.TestRunner;
 
+// Handle Ctrl+C to kill worker processes
+Console.CancelKeyPress += (_, e) =>
+{
+    WorkerProcess.KillAll();
+    Environment.Exit(130); // Standard exit code for Ctrl+C
+};
+
+AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+{
+    WorkerProcess.KillAll();
+};
+
 return await RunAsync(args);
 
 static async Task<int> RunAsync(string[] args)

@@ -197,6 +197,7 @@ public class TestRunner
             {
                 using var cts = new CancellationTokenSource();
                 var testsToRun = pending.ToList();
+                var pendingBeforeRun = pending.Count;
 
                 await foreach (var msg in worker.RunAsync(assemblyPath, testsToRun, _testTimeoutSeconds, cts.Token)
                     .WithTimeout(TimeSpan.FromSeconds(_testTimeoutSeconds), cts))
@@ -252,6 +253,17 @@ public class TestRunner
                     pending.Remove(fqn);
                     lock (results) results.Crashed.Add(fqn);
                     display.TestCrashed(fqn);
+                }
+
+                // If no progress was made (tests never started by NUnit), mark remaining as crashed
+                if (pending.Count > 0 && pending.Count == pendingBeforeRun)
+                {
+                    foreach (var fqn in pending.ToList())
+                    {
+                        pending.Remove(fqn);
+                        lock (results) results.Crashed.Add(fqn);
+                        display.TestCrashed(fqn);
+                    }
                 }
             }
             catch (TimeoutException)

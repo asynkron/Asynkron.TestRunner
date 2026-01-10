@@ -9,6 +9,9 @@ namespace Asynkron.TestRunner;
 /// </summary>
 public class WorkerProcess : IAsyncDisposable
 {
+    private static readonly List<WorkerProcess> ActiveWorkers = new();
+    private static readonly object WorkersLock = new();
+
     private readonly Process _process;
     private readonly StreamWriter _stdin;
     private readonly StreamReader _stdout;
@@ -19,6 +22,29 @@ public class WorkerProcess : IAsyncDisposable
         _process = process;
         _stdin = process.StandardInput;
         _stdout = process.StandardOutput;
+
+        lock (WorkersLock)
+        {
+            ActiveWorkers.Add(this);
+        }
+    }
+
+    /// <summary>
+    /// Kills all active worker processes (for Ctrl+C cleanup)
+    /// </summary>
+    public static void KillAll()
+    {
+        List<WorkerProcess> workers;
+        lock (WorkersLock)
+        {
+            workers = ActiveWorkers.ToList();
+            ActiveWorkers.Clear();
+        }
+
+        foreach (var worker in workers)
+        {
+            worker.Kill();
+        }
     }
 
     /// <summary>
@@ -167,6 +193,11 @@ public class WorkerProcess : IAsyncDisposable
             return;
 
         _disposed = true;
+
+        lock (WorkersLock)
+        {
+            ActiveWorkers.Remove(this);
+        }
 
         try
         {
