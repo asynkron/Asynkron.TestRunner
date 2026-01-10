@@ -59,7 +59,8 @@ public class TestRunner
                 {
                     var filter = TestFilter.Parse(_filter);
                     discovered = discovered.Where(t => filter.Matches(t.FullyQualifiedName, t.DisplayName)).ToList();
-                    AnsiConsole.MarkupLine($"[dim]Filter applied: {discovered.Count}/{totalDiscovered} tests match[/]");
+                    var skippedCount = discovered.Count(t => t.SkipReason != null);
+                    AnsiConsole.MarkupLine($"[dim]Filter applied: {discovered.Count}/{totalDiscovered} tests match ({skippedCount} skipped)[/]");
                 }
 
                 allTests = discovered.Select(t => t.FullyQualifiedName).ToList();
