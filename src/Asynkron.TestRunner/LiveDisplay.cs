@@ -24,10 +24,22 @@ public class LiveDisplay
     private readonly HashSet<string> _running = new();
     private string? _lastCompleted;
     private string? _lastStatus;
+    private string? _filter;
+    private string? _assemblyName;
 
     public void SetTotal(int total)
     {
         lock (_lock) _total = total;
+    }
+
+    public void SetFilter(string? filter)
+    {
+        lock (_lock) _filter = filter;
+    }
+
+    public void SetAssembly(string assemblyPath)
+    {
+        lock (_lock) _assemblyName = Path.GetFileNameWithoutExtension(assemblyPath);
     }
 
     public void TestStarted(string displayName)
@@ -132,8 +144,13 @@ public class LiveDisplay
                 CreateRunningSection()
             );
 
+            // Build header: show filter if set, otherwise assembly name
+            var headerText = !string.IsNullOrEmpty(_filter)
+                ? $"[dim]filter[/] [bold]\"{_filter}\"[/]"
+                : _assemblyName ?? "Test Progress";
+
             var panel = new Panel(layout)
-                .Header($"[bold]Test Progress[/] [dim]({completed}/{_total})[/]")
+                .Header($"{headerText} [dim]({completed}/{_total})[/]")
                 .Border(BoxBorder.Rounded)
                 .BorderColor(Color.Grey)
                 .Expand();

@@ -101,6 +101,8 @@ public class TestRunner
 
         var display = new LiveDisplay();
         display.SetTotal(allTests.Count);
+        display.SetFilter(_filter);
+        display.SetAssembly(assemblyPath);
 
         var failureDetails = new List<(string Name, string Message, string? Stack)>();
 
