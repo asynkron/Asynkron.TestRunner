@@ -150,7 +150,7 @@ public class LiveDisplay
                 : _assemblyName ?? "Test Progress";
 
             var panel = new Panel(layout)
-                .Header($"{headerText} [dim]({completed}/{_total})[/]")
+                .Header($"{headerText} [blue]({completed}/{_total})[/]")
                 .Border(BoxBorder.Rounded)
                 .BorderColor(Color.Grey)
                 .Expand();
