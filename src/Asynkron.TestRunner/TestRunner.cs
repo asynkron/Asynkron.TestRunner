@@ -186,18 +186,19 @@ public class TestRunner
                 // Monitor loop: refresh display and spawn isolation workers as needed
                 while (true)
                 {
-                    UpdateDisplay();
-
                     // Clean up completed isolation workers first
                     lock (isolationLock)
                     {
                         activeIsolationWorkers.RemoveAll(t => t.IsCompleted);
                     }
 
-                    // Spawn isolation workers for suspicious tests (capped)
+                    // Update display with queue stats
                     int activeCount;
                     lock (isolationLock) activeCount = activeIsolationWorkers.Count;
+                    display.SetQueueStats(queue.SuspiciousCount, activeCount);
+                    UpdateDisplay();
 
+                    // Spawn isolation workers for suspicious tests (capped)
                     while (queue.SuspiciousCount > 0 && activeCount < maxIsolationWorkers)
                     {
                         var workerId = Interlocked.Increment(ref isolationWorkerIdCounter);

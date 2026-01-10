@@ -32,6 +32,8 @@ public class LiveDisplay
     private string? _assemblyName;
     private int _workerCount = 1;
     private int _timeoutSeconds = 30;
+    private int _suspiciousCount;
+    private int _isolationWorkerCount;
     private readonly Dictionary<int, WorkerState> _workerStates = new();
 
     private enum SlotStatus { Pending, Passed, Failed, Hanging, Crashed }
@@ -74,6 +76,15 @@ public class LiveDisplay
     public void SetTimeout(int seconds)
     {
         lock (_lock) _timeoutSeconds = seconds;
+    }
+
+    public void SetQueueStats(int suspiciousCount, int isolationWorkerCount)
+    {
+        lock (_lock)
+        {
+            _suspiciousCount = suspiciousCount;
+            _isolationWorkerCount = isolationWorkerCount;
+        }
     }
 
     public void SetWorkerBatch(int workerIndex, int offset, int size)
@@ -504,6 +515,14 @@ public class LiveDisplay
             };
 
             parts.Add($"[{color}]●[/]");
+        }
+
+        // Show isolation worker info
+        if (_suspiciousCount > 0 || _isolationWorkerCount > 0)
+        {
+            parts.Add($" [dim]|[/] [yellow]{_suspiciousCount}[/] suspicious");
+            if (_isolationWorkerCount > 0)
+                parts.Add($"[cyan]{_isolationWorkerCount}[/] isolation");
         }
 
         return new Markup(string.Join(" ", parts));
