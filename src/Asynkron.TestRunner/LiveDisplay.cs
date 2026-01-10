@@ -166,6 +166,7 @@ public class LiveDisplay
     {
         var lines = new List<IRenderable>();
         var textWidth = ContentWidth - 4; // Leave room for status icon and spacing
+        const int minLines = 5; // Minimum lines to prevent panel shrinking
 
         if (_lastCompleted != null && _lastStatus != null)
         {
@@ -188,6 +189,12 @@ public class LiveDisplay
         if (lines.Count == 0)
         {
             lines.Add(new Markup("[dim]Waiting for tests...[/]"));
+        }
+
+        // Pad to minimum height to prevent flickering
+        while (lines.Count < minLines)
+        {
+            lines.Add(new Text(""));
         }
 
         return new Rows(lines);
