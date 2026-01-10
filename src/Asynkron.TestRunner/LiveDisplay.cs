@@ -156,7 +156,7 @@ public class LiveDisplay
 
     public void TestStarted(string displayName)
     {
-        lock (_lock) _running[Truncate(displayName, ContentWidth)] = DateTime.UtcNow;
+        lock (_lock) _running[displayName] = DateTime.UtcNow;
     }
 
     /// <summary>
@@ -165,7 +165,7 @@ public class LiveDisplay
     /// </summary>
     public void TestRemoved(string displayName)
     {
-        lock (_lock) _running.Remove(Truncate(displayName, ContentWidth));
+        lock (_lock) _running.Remove(displayName);
     }
 
     public void TestPassed(string displayName)
@@ -174,7 +174,7 @@ public class LiveDisplay
         {
             _passed++;
             _completionOrder.Add(SlotStatus.Passed);
-            _running.Remove(Truncate(displayName, ContentWidth));
+            _running.Remove(displayName);
             _lastCompleted = displayName;
             _lastStatus = "[green]✓[/]";
         }
@@ -186,7 +186,7 @@ public class LiveDisplay
         {
             _failed++;
             _completionOrder.Add(SlotStatus.Failed);
-            _running.Remove(Truncate(displayName, ContentWidth));
+            _running.Remove(displayName);
             _lastCompleted = displayName;
             _lastStatus = "[red]✗[/]";
         }
@@ -198,7 +198,7 @@ public class LiveDisplay
         {
             _skipped++;
             _completionOrder.Add(SlotStatus.Passed); // Skipped = green in heat map
-            _running.Remove(Truncate(displayName, ContentWidth));
+            _running.Remove(displayName);
             _lastCompleted = displayName;
             _lastStatus = "[yellow]○[/]";
         }
@@ -210,7 +210,7 @@ public class LiveDisplay
         {
             _hanging++;
             _completionOrder.Add(SlotStatus.Hanging);
-            _running.Remove(Truncate(displayName, ContentWidth));
+            _running.Remove(displayName);
             _lastCompleted = displayName;
             _lastStatus = "[red]⏱[/]";
         }
@@ -222,7 +222,7 @@ public class LiveDisplay
         {
             _crashed++;
             _completionOrder.Add(SlotStatus.Crashed);
-            _running.Remove(Truncate(displayName, ContentWidth));
+            _running.Remove(displayName);
             _lastCompleted = displayName;
             _lastStatus = "[red]💥[/]";
         }
@@ -554,7 +554,7 @@ public class LiveDisplay
     {
         lock (_lock)
         {
-            return _stuckTests.Contains(Truncate(displayName, ContentWidth));
+            return _stuckTests.Contains(displayName);
         }
     }
 }
