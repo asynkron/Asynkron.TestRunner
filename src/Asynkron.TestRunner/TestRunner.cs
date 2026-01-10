@@ -158,6 +158,14 @@ public class TestRunner
                                     break;
 
                                 case RunCompletedEvent:
+                                    // Mark any still-running tests as crashed (they never completed)
+                                    foreach (var fqn in running.ToList())
+                                    {
+                                        running.Remove(fqn);
+                                        pending.Remove(fqn);
+                                        results.Crashed.Add(fqn);
+                                        display.TestCrashed(fqn);
+                                    }
                                     break;
 
                                 case ErrorEvent:
@@ -267,6 +275,16 @@ public class TestRunner
                             break;
 
                         case RunCompletedEvent:
+                            // Mark any still-running tests as crashed
+                            foreach (var fqn in running.ToList())
+                            {
+                                running.Remove(fqn);
+                                pending.Remove(fqn);
+                                results.Crashed.Add(fqn);
+                                AnsiConsole.MarkupLine($"[red]  💥[/] {fqn} [red](NO RESULT)[/]");
+                            }
+                            break;
+
                         case ErrorEvent:
                             break;
                     }
