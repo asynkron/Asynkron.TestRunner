@@ -9,8 +9,8 @@ namespace Asynkron.TestRunner;
 /// </summary>
 public class LiveDisplay
 {
-    private const int PanelWidth = 80;
-    private const int ContentWidth = PanelWidth - 4; // Account for panel borders
+    private static int PanelWidth => Math.Max(80, Console.WindowWidth - 2);
+    private static int ContentWidth => PanelWidth - 4; // Account for panel borders
 
     private readonly Stopwatch _stopwatch = Stopwatch.StartNew();
     private readonly object _lock = new();
