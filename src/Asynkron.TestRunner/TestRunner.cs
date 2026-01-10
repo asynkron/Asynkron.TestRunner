@@ -52,12 +52,14 @@ public class TestRunner
             await using (var discoveryWorker = WorkerProcess.Spawn())
             {
                 var discovered = await discoveryWorker.DiscoverAsync(assemblyPath);
+                var totalDiscovered = discovered.Count;
 
                 // Apply filter if specified
                 if (!string.IsNullOrWhiteSpace(_filter))
                 {
                     var filter = TestFilter.Parse(_filter);
                     discovered = discovered.Where(t => filter.Matches(t.FullyQualifiedName, t.DisplayName)).ToList();
+                    AnsiConsole.MarkupLine($"[dim]Filter applied: {discovered.Count}/{totalDiscovered} tests match[/]");
                 }
 
                 allTests = discovered.Select(t => t.FullyQualifiedName).ToList();

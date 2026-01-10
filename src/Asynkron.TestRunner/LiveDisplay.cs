@@ -146,7 +146,7 @@ public class LiveDisplay
 
             // Build header: show filter if set, otherwise assembly name
             var headerText = !string.IsNullOrEmpty(_filter)
-                ? $"[dim]filter[/] [bold]\"{_filter}\"[/]"
+                ? $"[blue]filter[/] [green]\"{_filter}\"[/]"
                 : _assemblyName ?? "Test Progress";
 
             var panel = new Panel(layout)
