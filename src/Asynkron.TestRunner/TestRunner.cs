@@ -158,13 +158,16 @@ public class TestRunner
 
     private static List<List<string>> SplitIntoBatches(List<string> tests, int batchCount)
     {
+        // Chunk-based: consecutive tests stay together (siblings in same worker)
         var batches = new List<List<string>>();
-        for (var i = 0; i < batchCount; i++)
-            batches.Add(new List<string>());
+        var chunkSize = (tests.Count + batchCount - 1) / batchCount; // Ceiling division
 
-        // Round-robin distribution for balanced batches
-        for (var i = 0; i < tests.Count; i++)
-            batches[i % batchCount].Add(tests[i]);
+        for (var i = 0; i < batchCount; i++)
+        {
+            var start = i * chunkSize;
+            var count = Math.Min(chunkSize, tests.Count - start);
+            batches.Add(count > 0 ? tests.GetRange(start, count) : []);
+        }
 
         return batches;
     }
