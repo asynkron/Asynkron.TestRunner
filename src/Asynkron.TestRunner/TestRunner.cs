@@ -172,20 +172,53 @@ public class TestRunner
             {
                 void UpdateDisplay() => ctx.UpdateTarget(display.Render());
 
-                // Run all workers in parallel - they pull work from shared queue
-                var workerTasks = Enumerable.Range(0, _workerCount)
-                    .Select(index => RunWorkerAsync(assemblyPath, index, queue, batchSize, results, display, failureDetails, failureLock, UpdateDisplay, ct))
-                    .ToArray();
+                // Track active isolation workers
+                var isolationWorkerIdCounter = 1000; // Start IDs at 1000 to distinguish from main workers
+                var activeIsolationWorkers = new List<Task>();
+                var isolationLock = new object();
 
-                // Periodically refresh display while workers are running
-                var allDone = Task.WhenAll(workerTasks);
-                while (!allDone.IsCompleted)
+                // Run all main workers in parallel - they pull batches from shared queue
+                var mainWorkerTasks = Enumerable.Range(0, _workerCount)
+                    .Select(index => RunWorkerAsync(assemblyPath, index, queue, batchSize, results, display, failureDetails, failureLock, UpdateDisplay, ct))
+                    .ToList();
+
+                // Monitor loop: refresh display and spawn isolation workers as needed
+                while (true)
                 {
                     UpdateDisplay();
-                    await Task.WhenAny(allDone, Task.Delay(100));
+
+                    // Spawn isolation workers for suspicious tests
+                    while (queue.SuspiciousCount > 0)
+                    {
+                        var workerId = Interlocked.Increment(ref isolationWorkerIdCounter);
+                        var task = RunIsolationWorkerAsync(assemblyPath, workerId, queue, results, display, failureDetails, failureLock, UpdateDisplay, ct);
+                        lock (isolationLock) activeIsolationWorkers.Add(task);
+                    }
+
+                    // Clean up completed isolation workers
+                    lock (isolationLock)
+                    {
+                        activeIsolationWorkers.RemoveAll(t => t.IsCompleted);
+                    }
+
+                    // Check if all work is done
+                    var mainDone = mainWorkerTasks.All(t => t.IsCompleted);
+                    bool isolationDone;
+                    lock (isolationLock) isolationDone = activeIsolationWorkers.Count == 0;
+
+                    if (mainDone && isolationDone && queue.IsComplete)
+                        break;
+
+                    await Task.Delay(100, ct);
                 }
 
-                await allDone;
+                // Wait for any stragglers
+                await Task.WhenAll(mainWorkerTasks);
+                Task[] remaining;
+                lock (isolationLock) remaining = activeIsolationWorkers.ToArray();
+                if (remaining.Length > 0)
+                    await Task.WhenAll(remaining);
+
                 UpdateDisplay();
             });
 
@@ -234,25 +267,23 @@ public class TestRunner
 
         while (!ct.IsCancellationRequested)
         {
-            // Pull next batch from queue (suspicious tests are returned one at a time)
-            var (testsToRun, isolated) = queue.TakeBatch(workerIndex, batchSize);
+            // Pull next batch from queue (main workers only get regular batches, not suspicious)
+            var testsToRun = queue.TakeBatch(workerIndex, batchSize);
 
             if (testsToRun.Count == 0)
             {
-                // No more work - check if truly done or just waiting for other workers
-                if (queue.IsComplete)
+                // No more regular work - check if truly done
+                if (!queue.HasWork && queue.SuspiciousCount == 0 && queue.IsComplete)
                 {
                     Log(workerIndex, "No more work, exiting");
                     break;
                 }
-                // Other workers still have work, wait a bit and check again
+                // Wait a bit and check again (suspicious tests handled by isolation workers)
                 await Task.Delay(100, ct);
                 continue;
             }
 
-            Log(workerIndex, isolated
-                ? $"ISOLATED: running '{testsToRun[0]}'"
-                : $"Batch of {testsToRun.Count} tests");
+            Log(workerIndex, $"Batch of {testsToRun.Count} tests");
 
             running.Clear();
 
@@ -407,58 +438,28 @@ public class TestRunner
             }
             catch (TimeoutException)
             {
-                Log(workerIndex, $"TIMEOUT: running={running.Count}, isolated={isolated}");
-                if (isolated || running.Count <= 1)
+                Log(workerIndex, $"TIMEOUT: running={running.Count}");
+                // Move all running tests to suspicious for isolated retry
+                Log(workerIndex, $"Moving {running.Count} to suspicious");
+                queue.MarkSuspicious(workerIndex, running);
+                foreach (var fqn in running)
                 {
-                    var testsToMark = running.Count > 0 ? running.ToList() : testsToRun;
-                    foreach (var fqn in testsToMark)
-                    {
-                        Log(workerIndex, $"HANGING (confirmed): {fqn}");
-                        queue.TestHanging(workerIndex, fqn);
-                        lock (results) results.Hanging.Add(fqn);
-                        var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
-                        display.TestHanging(dn);
-                        ReportCrashedOrHanging(fqn, "hanging", testOutput, $"Test exceeded {_testTimeoutSeconds}s");
-                    }
-                }
-                else
-                {
-                    Log(workerIndex, $"Moving {running.Count} to suspicious");
-                    queue.MarkSuspicious(workerIndex, running);
-                    foreach (var fqn in running)
-                    {
-                        var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
-                        display.TestRemoved(dn);
-                    }
+                    var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
+                    display.TestRemoved(dn);
                 }
                 worker.Kill();
                 display.WorkerRestarting(workerIndex);
             }
             catch (WorkerCrashedException ex)
             {
-                Log(workerIndex, $"CRASHED: running={running.Count}, isolated={isolated}, exit={ex.ExitCode}");
-                if (isolated || running.Count <= 1)
+                Log(workerIndex, $"CRASHED: running={running.Count}, exit={ex.ExitCode}");
+                // Move all running tests to suspicious for isolated retry
+                Log(workerIndex, $"Moving {running.Count} to suspicious (crash)");
+                queue.MarkSuspicious(workerIndex, running);
+                foreach (var fqn in running)
                 {
-                    var testsToMark = running.Count > 0 ? running.ToList() : testsToRun;
-                    foreach (var fqn in testsToMark)
-                    {
-                        Log(workerIndex, $"CRASHED (confirmed): {fqn}");
-                        queue.TestCompleted(workerIndex, fqn);
-                        lock (results) results.Crashed.Add(fqn);
-                        var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
-                        display.TestCrashed(dn);
-                        ReportCrashedOrHanging(fqn, "crashed", testOutput, $"Exit code {ex.ExitCode}");
-                    }
-                }
-                else
-                {
-                    Log(workerIndex, $"Moving {running.Count} to suspicious (crash)");
-                    queue.MarkSuspicious(workerIndex, running);
-                    foreach (var fqn in running)
-                    {
-                        var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
-                        display.TestRemoved(dn);
-                    }
+                    var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
+                    display.TestRemoved(dn);
                 }
                 display.WorkerRestarting(workerIndex);
             }
@@ -482,6 +483,148 @@ public class TestRunner
 
         Log(workerIndex, "COMPLETE");
         display.WorkerComplete(workerIndex);
+    }
+
+    /// <summary>
+    /// Isolation worker: runs a single suspicious test to confirm if it's hanging/crashing
+    /// </summary>
+    private async Task RunIsolationWorkerAsync(
+        string assemblyPath,
+        int workerId,
+        WorkQueue queue,
+        TestResults results,
+        LiveDisplay display,
+        List<(string Name, string Message, string? Stack)> failureDetails,
+        object failureLock,
+        Action updateDisplay,
+        CancellationToken ct)
+    {
+        var testFqn = queue.TakeSuspicious(workerId);
+        if (testFqn == null)
+            return; // Another worker grabbed it
+
+        Log(workerId, $"ISOLATION: running '{testFqn}'");
+
+        var testOutput = new Dictionary<string, StringBuilder>();
+        string? displayName = null;
+
+        await using var worker = WorkerProcess.Spawn();
+
+        try
+        {
+            using var cts = new CancellationTokenSource();
+
+            await foreach (var msg in worker.RunAsync(assemblyPath, [testFqn], _testTimeoutSeconds, cts.Token)
+                .WithTimeout(TimeSpan.FromSeconds(_testTimeoutSeconds), cts))
+            {
+                switch (msg)
+                {
+                    case TestStartedEvent started:
+                        displayName = started.DisplayName;
+                        display.TestStarted(started.DisplayName);
+                        break;
+
+                    case TestOutputEvent output:
+                        if (!testOutput.TryGetValue(output.FullyQualifiedName, out var sb))
+                        {
+                            sb = new StringBuilder();
+                            testOutput[output.FullyQualifiedName] = sb;
+                        }
+                        sb.AppendLine(output.Text);
+                        break;
+
+                    case TestPassedEvent passed:
+                        queue.TestCompleted(workerId, passed.FullyQualifiedName);
+                        lock (results) results.Passed.Add(passed.FullyQualifiedName);
+                        display.TestPassed(passed.DisplayName);
+                        Log(workerId, $"ISOLATION PASSED: {testFqn}");
+                        _resultCallback?.Invoke(new TestResultDetail(
+                            passed.FullyQualifiedName,
+                            passed.DisplayName,
+                            "passed",
+                            passed.DurationMs,
+                            Output: testOutput.GetValueOrDefault(passed.FullyQualifiedName)?.ToString()
+                        ));
+                        return;
+
+                    case TestFailedEvent failed:
+                        queue.TestCompleted(workerId, failed.FullyQualifiedName);
+                        lock (results) results.Failed.Add(failed.FullyQualifiedName);
+                        display.TestFailed(failed.DisplayName);
+                        lock (failureLock) failureDetails.Add((failed.DisplayName, failed.ErrorMessage, failed.StackTrace));
+                        Log(workerId, $"ISOLATION FAILED: {testFqn}");
+                        _resultCallback?.Invoke(new TestResultDetail(
+                            failed.FullyQualifiedName,
+                            failed.DisplayName,
+                            "failed",
+                            failed.DurationMs,
+                            failed.ErrorMessage,
+                            failed.StackTrace,
+                            testOutput.GetValueOrDefault(failed.FullyQualifiedName)?.ToString()
+                        ));
+                        return;
+
+                    case TestSkippedEvent skipped:
+                        queue.TestCompleted(workerId, skipped.FullyQualifiedName);
+                        lock (results) results.Skipped.Add(skipped.FullyQualifiedName);
+                        display.TestSkipped(skipped.DisplayName);
+                        Log(workerId, $"ISOLATION SKIPPED: {testFqn}");
+                        _resultCallback?.Invoke(new TestResultDetail(
+                            skipped.FullyQualifiedName,
+                            skipped.DisplayName,
+                            "skipped",
+                            0,
+                            SkipReason: skipped.Reason
+                        ));
+                        return;
+
+                    case RunCompletedEvent:
+                        // Test didn't report - mark as crashed
+                        queue.TestCompleted(workerId, testFqn);
+                        lock (results) results.Crashed.Add(testFqn);
+                        display.TestCrashed(displayName ?? testFqn);
+                        Log(workerId, $"ISOLATION CRASHED (no result): {testFqn}");
+                        ReportCrashedOrHanging(testFqn, "crashed", testOutput, "Test did not report completion");
+                        return;
+                }
+            }
+
+            // Stream ended without completion - crashed
+            queue.TestCompleted(workerId, testFqn);
+            lock (results) results.Crashed.Add(testFqn);
+            display.TestCrashed(displayName ?? testFqn);
+            Log(workerId, $"ISOLATION CRASHED (stream ended): {testFqn}");
+            ReportCrashedOrHanging(testFqn, "crashed", testOutput, "Stream ended while test running");
+        }
+        catch (TimeoutException)
+        {
+            // Confirmed hanging - ran isolated with full timeout
+            queue.TestHanging(workerId, testFqn);
+            lock (results) results.Hanging.Add(testFqn);
+            display.TestHanging(displayName ?? testFqn);
+            Log(workerId, $"ISOLATION HANGING (confirmed): {testFqn}");
+            ReportCrashedOrHanging(testFqn, "hanging", testOutput, $"Test exceeded {_testTimeoutSeconds}s in isolation");
+            worker.Kill();
+        }
+        catch (WorkerCrashedException ex)
+        {
+            // Confirmed crash - ran isolated
+            queue.TestCompleted(workerId, testFqn);
+            lock (results) results.Crashed.Add(testFqn);
+            display.TestCrashed(displayName ?? testFqn);
+            Log(workerId, $"ISOLATION CRASHED (confirmed): {testFqn}, exit={ex.ExitCode}");
+            ReportCrashedOrHanging(testFqn, "crashed", testOutput, $"Exit code {ex.ExitCode}");
+        }
+        catch (Exception ex)
+        {
+            // Unknown error - mark as crashed
+            queue.TestCompleted(workerId, testFqn);
+            lock (results) results.Crashed.Add(testFqn);
+            display.TestCrashed(displayName ?? testFqn);
+            Log(workerId, $"ISOLATION ERROR: {testFqn}, {ex.GetType().Name}: {ex.Message}");
+            ReportCrashedOrHanging(testFqn, "crashed", testOutput, ex.Message);
+            worker.Kill();
+        }
     }
 
     private async Task RunWithRecoveryQuietAsync(string assemblyPath, List<string> allTests, TestResults results, CancellationToken ct)

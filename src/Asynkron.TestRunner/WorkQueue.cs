@@ -43,13 +43,24 @@ public class WorkQueue
     }
 
     /// <summary>
-    /// Check if there's any work available
+    /// Check if there's any work available (regular batches only)
     /// </summary>
     public bool HasWork
     {
         get
         {
-            lock (_lock) return _pending.Count > 0 || _suspicious.Count > 0;
+            lock (_lock) return _pending.Count > 0;
+        }
+    }
+
+    /// <summary>
+    /// Number of suspicious tests waiting for isolated retry
+    /// </summary>
+    public int SuspiciousCount
+    {
+        get
+        {
+            lock (_lock) return _suspicious.Count;
         }
     }
 
@@ -70,25 +81,15 @@ public class WorkQueue
     }
 
     /// <summary>
-    /// Take a batch of tests for a worker.
-    /// Suspicious tests (from previous timeouts) are returned first, one at a time.
+    /// Take a batch of tests for a main worker (skips suspicious tests).
     /// </summary>
-    public (List<string> tests, bool isolated) TakeBatch(int workerId, int maxSize)
+    public List<string> TakeBatch(int workerId, int maxSize)
     {
         lock (_lock)
         {
             if (!_assigned.ContainsKey(workerId))
                 _assigned[workerId] = new HashSet<string>();
 
-            // Suspicious tests run isolated (one at a time)
-            if (_suspicious.Count > 0)
-            {
-                var test = _suspicious.Dequeue();
-                _assigned[workerId].Add(test);
-                return ([test], true);
-            }
-
-            // Normal batch
             var batch = new List<string>();
             while (batch.Count < maxSize && _pending.Count > 0)
             {
@@ -97,7 +98,27 @@ public class WorkQueue
                 _assigned[workerId].Add(test);
             }
 
-            return (batch, false);
+            return batch;
+        }
+    }
+
+    /// <summary>
+    /// Take a single suspicious test for an isolation worker.
+    /// Returns null if no suspicious tests available.
+    /// </summary>
+    public string? TakeSuspicious(int workerId)
+    {
+        lock (_lock)
+        {
+            if (_suspicious.Count == 0)
+                return null;
+
+            if (!_assigned.ContainsKey(workerId))
+                _assigned[workerId] = new HashSet<string>();
+
+            var test = _suspicious.Dequeue();
+            _assigned[workerId].Add(test);
+            return test;
         }
     }
 
