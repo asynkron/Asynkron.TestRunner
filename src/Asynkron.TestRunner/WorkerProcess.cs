@@ -147,6 +147,10 @@ public class WorkerProcess : IAsyncDisposable
         await foreach (var msg in ReadEventsAsync(ct))
         {
             yield return msg;
+
+            // Stop after run completes
+            if (msg is RunCompletedEvent)
+                yield break;
         }
     }
 
