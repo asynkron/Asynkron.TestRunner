@@ -417,6 +417,7 @@ public class TestRunner
                             break;
 
                         case RunCompletedEvent:
+                            // Mark tests that started but didn't complete as crashed
                             foreach (var fqn in running.ToList())
                             {
                                 running.Remove(fqn);
@@ -426,6 +427,13 @@ public class TestRunner
                                 display.TestCrashed(dn);
                                 ReportCrashedOrHanging(fqn, "crashed", testOutput, "Test did not report completion");
                             }
+                            // Tests that never started - move to suspicious for retry
+                            var remainingAfterRun = queue.GetAssigned(workerIndex);
+                            if (remainingAfterRun.Count > 0)
+                            {
+                                Log(workerIndex, $"RunCompleted but {remainingAfterRun.Count} tests never started, moving to suspicious");
+                                queue.MarkSuspicious(workerIndex, remainingAfterRun);
+                            }
                             break;
 
                         case ErrorEvent:
@@ -433,15 +441,30 @@ public class TestRunner
                     }
                 }
 
-                // Stream ended normally - mark any still-running as crashed
-                foreach (var fqn in running.ToList())
+                // Stream ended - check for any remaining assigned tests
+                var remainingAssigned = queue.GetAssigned(workerIndex);
+                if (remainingAssigned.Count > 0)
                 {
-                    running.Remove(fqn);
-                    queue.TestCompleted(workerIndex, fqn);
-                    lock (results) results.Crashed.Add(fqn);
-                    var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
-                    display.TestCrashed(dn);
-                    ReportCrashedOrHanging(fqn, "crashed", testOutput, "Stream ended while test running");
+                    Log(workerIndex, $"Stream ended with {remainingAssigned.Count} assigned tests, moving to suspicious");
+                    // Mark running tests as crashed (they started but didn't complete)
+                    foreach (var fqn in running.ToList())
+                    {
+                        if (remainingAssigned.Contains(fqn))
+                        {
+                            running.Remove(fqn);
+                            queue.TestCompleted(workerIndex, fqn);
+                            lock (results) results.Crashed.Add(fqn);
+                            var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
+                            display.TestCrashed(dn);
+                            ReportCrashedOrHanging(fqn, "crashed", testOutput, "Stream ended while test running");
+                        }
+                    }
+                    // Move remaining (never started) to suspicious for retry
+                    var neverStarted = queue.GetAssigned(workerIndex);
+                    if (neverStarted.Count > 0)
+                    {
+                        queue.MarkSuspicious(workerIndex, neverStarted);
+                    }
                 }
             }
             catch (TimeoutException)
