@@ -73,6 +73,27 @@ public class TestFilter
         return true;
     }
 
+    /// <summary>
+    /// Matches against FQN and display name (for worker discovery results)
+    /// </summary>
+    public bool Matches(string fullyQualifiedName, string displayName)
+    {
+        // FQN format: Namespace.Class.Method
+        if (Namespace != null && !fullyQualifiedName.Contains(Namespace, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (Class != null && !fullyQualifiedName.Contains(Class, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (Method != null && !fullyQualifiedName.Contains(Method, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (DisplayName != null && !displayName.Contains(DisplayName, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return true;
+    }
+
     public bool IsEmpty => Namespace == null && Class == null && Method == null && DisplayName == null;
 
     public override string ToString()

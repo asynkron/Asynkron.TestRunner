@@ -21,7 +21,6 @@ public class LiveDisplay
     private int _skipped;
     private int _hanging;
     private int _crashed;
-    private int _seen; // Actual unique tests seen (handles parameterized expansion)
     private readonly HashSet<string> _running = new();
     private string? _lastCompleted;
     private string? _lastStatus;
@@ -33,14 +32,7 @@ public class LiveDisplay
 
     public void TestStarted(string displayName)
     {
-        lock (_lock)
-        {
-            _running.Add(Truncate(displayName, ContentWidth));
-            _seen++;
-            // Update total if we're seeing more tests than discovered (parameterized expansion)
-            if (_seen > _total)
-                _total = _seen;
-        }
+        lock (_lock) _running.Add(Truncate(displayName, ContentWidth));
     }
 
     public void TestPassed(string displayName)

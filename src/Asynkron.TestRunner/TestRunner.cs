@@ -46,10 +46,22 @@ public class TestRunner
 
             AnsiConsole.MarkupLine($"[dim]Running tests in:[/] {Path.GetFileName(assemblyPath)}");
 
-            // Discover all tests upfront
-            var filter = TestFilter.Parse(_filter);
-            var discovered = await TestDiscovery.DiscoverTestsAsync([assemblyPath], filter);
-            var allTests = discovered.Select(t => t.FullyQualifiedName).ToList();
+            // Discover tests using worker (NUnit.Engine expands parameterized tests correctly)
+            AnsiConsole.MarkupLine($"[dim]Discovering tests...[/]");
+            List<string> allTests;
+            await using (var discoveryWorker = WorkerProcess.Spawn())
+            {
+                var discovered = await discoveryWorker.DiscoverAsync(assemblyPath);
+
+                // Apply filter if specified
+                if (!string.IsNullOrWhiteSpace(_filter))
+                {
+                    var filter = TestFilter.Parse(_filter);
+                    discovered = discovered.Where(t => filter.Matches(t.FullyQualifiedName, t.DisplayName)).ToList();
+                }
+
+                allTests = discovered.Select(t => t.FullyQualifiedName).ToList();
+            }
 
             if (allTests.Count == 0)
             {
