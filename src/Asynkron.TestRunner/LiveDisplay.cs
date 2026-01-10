@@ -25,6 +25,7 @@ public class LiveDisplay
     private int _crashed;
     private readonly Dictionary<string, DateTime> _running = new();
     private readonly HashSet<string> _stuckTests = new();
+    private readonly List<SlotStatus> _completionOrder = new(); // Actual completion order for heat map
     private string? _lastCompleted;
     private string? _lastStatus;
     private string? _filter;
@@ -40,6 +41,9 @@ public class LiveDisplay
         public DateTime LastActivity { get; set; } = DateTime.UtcNow;
         public bool IsRestarting { get; set; }
         public bool IsComplete { get; set; }
+        public int BatchOffset { get; set; }
+        public int BatchSize { get; set; }
+        public List<SlotStatus> CompletedResults { get; } = new();
     }
 
     public void SetTotal(int total)
@@ -70,6 +74,54 @@ public class LiveDisplay
     public void SetTimeout(int seconds)
     {
         lock (_lock) _timeoutSeconds = seconds;
+    }
+
+    public void SetWorkerBatch(int workerIndex, int offset, int size)
+    {
+        lock (_lock)
+        {
+            if (_workerStates.TryGetValue(workerIndex, out var state))
+            {
+                state.BatchOffset = offset;
+                state.BatchSize = size;
+            }
+        }
+    }
+
+    public void WorkerTestPassed(int workerIndex)
+    {
+        lock (_lock)
+        {
+            if (_workerStates.TryGetValue(workerIndex, out var state))
+                state.CompletedResults.Add(SlotStatus.Passed);
+        }
+    }
+
+    public void WorkerTestFailed(int workerIndex)
+    {
+        lock (_lock)
+        {
+            if (_workerStates.TryGetValue(workerIndex, out var state))
+                state.CompletedResults.Add(SlotStatus.Failed);
+        }
+    }
+
+    public void WorkerTestHanging(int workerIndex)
+    {
+        lock (_lock)
+        {
+            if (_workerStates.TryGetValue(workerIndex, out var state))
+                state.CompletedResults.Add(SlotStatus.Hanging);
+        }
+    }
+
+    public void WorkerTestCrashed(int workerIndex)
+    {
+        lock (_lock)
+        {
+            if (_workerStates.TryGetValue(workerIndex, out var state))
+                state.CompletedResults.Add(SlotStatus.Crashed);
+        }
     }
 
     public void WorkerActivity(int workerIndex)
@@ -121,6 +173,7 @@ public class LiveDisplay
         lock (_lock)
         {
             _passed++;
+            _completionOrder.Add(SlotStatus.Passed);
             _running.Remove(Truncate(displayName, ContentWidth));
             _lastCompleted = displayName;
             _lastStatus = "[green]✓[/]";
@@ -132,6 +185,7 @@ public class LiveDisplay
         lock (_lock)
         {
             _failed++;
+            _completionOrder.Add(SlotStatus.Failed);
             _running.Remove(Truncate(displayName, ContentWidth));
             _lastCompleted = displayName;
             _lastStatus = "[red]✗[/]";
@@ -143,6 +197,7 @@ public class LiveDisplay
         lock (_lock)
         {
             _skipped++;
+            _completionOrder.Add(SlotStatus.Passed); // Skipped = green in heat map
             _running.Remove(Truncate(displayName, ContentWidth));
             _lastCompleted = displayName;
             _lastStatus = "[yellow]○[/]";
@@ -154,6 +209,7 @@ public class LiveDisplay
         lock (_lock)
         {
             _hanging++;
+            _completionOrder.Add(SlotStatus.Hanging);
             _running.Remove(Truncate(displayName, ContentWidth));
             _lastCompleted = displayName;
             _lastStatus = "[red]⏱[/]";
@@ -165,6 +221,7 @@ public class LiveDisplay
         lock (_lock)
         {
             _crashed++;
+            _completionOrder.Add(SlotStatus.Crashed);
             _running.Remove(Truncate(displayName, ContentWidth));
             _lastCompleted = displayName;
             _lastStatus = "[red]💥[/]";
@@ -253,12 +310,8 @@ public class LiveDisplay
         var barWidth = ContentWidth - 7; // Leave room for " 100 %"
         var percentage = Math.Min(1.0, (double)completed / total);
 
-        // Synthesize results from counts for heat map
-        var allResults = new List<SlotStatus>();
-        allResults.AddRange(Enumerable.Repeat(SlotStatus.Passed, _passed));
-        allResults.AddRange(Enumerable.Repeat(SlotStatus.Failed, _failed));
-        allResults.AddRange(Enumerable.Repeat(SlotStatus.Hanging, _hanging));
-        allResults.AddRange(Enumerable.Repeat(SlotStatus.Crashed, _crashed));
+        // Use actual completion order, pad with pending for remaining tests
+        var allResults = new List<SlotStatus>(_completionOrder);
         while (allResults.Count < total)
             allResults.Add(SlotStatus.Pending);
 
