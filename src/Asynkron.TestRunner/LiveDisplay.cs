@@ -26,6 +26,7 @@ public class LiveDisplay
     private string? _lastStatus;
     private string? _filter;
     private string? _assemblyName;
+    private int _workerCount = 1;
 
     public void SetTotal(int total)
     {
@@ -40,6 +41,11 @@ public class LiveDisplay
     public void SetAssembly(string assemblyPath)
     {
         lock (_lock) _assemblyName = Path.GetFileNameWithoutExtension(assemblyPath);
+    }
+
+    public void SetWorkerCount(int count)
+    {
+        lock (_lock) _workerCount = count;
     }
 
     public void TestStarted(string displayName)
@@ -149,8 +155,10 @@ public class LiveDisplay
                 ? $"[blue]filter[/] [green]\"{_filter}\"[/]"
                 : _assemblyName ?? "Test Progress";
 
+            var workerText = _workerCount > 1 ? $" [dim]({_workerCount} workers)[/]" : "";
+
             var panel = new Panel(layout)
-                .Header($"{headerText} [blue]({completed}/{_total})[/]")
+                .Header($"{headerText}{workerText} [blue]({completed}/{_total})[/]")
                 .Border(BoxBorder.Rounded)
                 .BorderColor(Color.Grey)
                 .Expand();

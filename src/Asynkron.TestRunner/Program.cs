@@ -67,6 +67,7 @@ static async Task<int> HandleRunAsync(string[] args)
     var filter = ParseFilter(args);
     var timeout = ParseTimeout(args);
     var quiet = ParseQuiet(args);
+    var workers = ParseWorkers(args) ?? 1;
 
     if (assemblyPaths.Count == 0)
     {
@@ -76,8 +77,25 @@ static async Task<int> HandleRunAsync(string[] args)
     }
 
     var store = new ResultStore();
-    var runner = new TestRunner(store, timeout, filter, quiet);
+    var runner = new TestRunner(store, timeout, filter, quiet, workers);
     return await runner.RunTestsAsync(assemblyPaths.ToArray());
+}
+
+static int? ParseWorkers(string[] args)
+{
+    for (var i = 0; i < args.Length; i++)
+    {
+        if (args[i].Equals("--workers", StringComparison.OrdinalIgnoreCase) ||
+            args[i].Equals("-w", StringComparison.OrdinalIgnoreCase))
+        {
+            if (i + 1 < args.Length && int.TryParse(args[i + 1], out var workers))
+            {
+                return Math.Max(1, workers);
+            }
+            return Environment.ProcessorCount;
+        }
+    }
+    return null;
 }
 
 static async Task<int> HandleListAsync(string[] args)
@@ -395,6 +413,7 @@ static void PrintUsage()
         Options:
           -f, --filter <pattern>       Filter tests by pattern (Class=Foo, Method=Bar)
           -t, --timeout <seconds>      Per-test timeout (default: 20s for run, 30s for isolate)
+          -w, --workers [N]            Run N worker processes in parallel (default: 1)
           -p, --parallel [N]           Run N batches in parallel (default: 1, or CPU count)
           -q, --quiet                  Suppress verbose output
           -h, --help                   Show this help

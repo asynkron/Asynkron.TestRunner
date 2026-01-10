@@ -22,13 +22,15 @@ public class TestRunner
     private readonly int _testTimeoutSeconds;
     private readonly string? _filter;
     private readonly bool _quiet;
+    private readonly int _workerCount;
 
-    public TestRunner(ResultStore store, int? timeoutSeconds = null, string? filter = null, bool quiet = false)
+    public TestRunner(ResultStore store, int? timeoutSeconds = null, string? filter = null, bool quiet = false, int workerCount = 1)
     {
         _store = store;
         _testTimeoutSeconds = timeoutSeconds ?? 30;
         _filter = filter;
         _quiet = quiet;
+        _workerCount = Math.Max(1, workerCount);
     }
 
     public async Task<int> RunTestsAsync(string[] assemblyPaths)
@@ -97,113 +99,40 @@ public class TestRunner
 
     private async Task RunWithRecoveryLiveAsync(string assemblyPath, List<string> allTests, TestResults results)
     {
-        var pending = new HashSet<string>(allTests);
-        var running = new HashSet<string>();
-        var attempts = 0;
-        const int maxAttempts = 100;
-
         var display = new LiveDisplay();
         display.SetTotal(allTests.Count);
         display.SetFilter(_filter);
         display.SetAssembly(assemblyPath);
+        display.SetWorkerCount(_workerCount);
 
         var failureDetails = new List<(string Name, string Message, string? Stack)>();
+        var failureLock = new object();
+
+        // Split tests into batches for each worker
+        var batches = SplitIntoBatches(allTests, _workerCount);
 
         await AnsiConsole.Live(display.Render())
             .AutoClear(false)
             .StartAsync(async ctx =>
             {
-                while (pending.Count > 0 && attempts < maxAttempts)
+                // Create update callback that refreshes the display
+                void UpdateDisplay() => ctx.UpdateTarget(display.Render());
+
+                // Run all workers in parallel
+                var workerTasks = batches.Select((batch, index) =>
+                    RunWorkerBatchAsync(assemblyPath, batch, index, results, display, failureDetails, failureLock, UpdateDisplay)
+                ).ToArray();
+
+                // Periodically refresh display while workers are running
+                var allDone = Task.WhenAll(workerTasks);
+                while (!allDone.IsCompleted)
                 {
-                    attempts++;
-                    running.Clear();
-
-                    await using var worker = WorkerProcess.Spawn();
-
-                    try
-                    {
-                        using var cts = new CancellationTokenSource();
-                        var testsToRun = pending.ToList();
-
-                        await foreach (var msg in worker.RunAsync(assemblyPath, testsToRun, _testTimeoutSeconds, cts.Token)
-                            .WithTimeout(TimeSpan.FromSeconds(_testTimeoutSeconds), cts))
-                        {
-                            switch (msg)
-                            {
-                                case TestStartedEvent started:
-                                    running.Add(started.FullyQualifiedName);
-                                    display.TestStarted(started.DisplayName);
-                                    break;
-
-                                case TestPassedEvent testPassed:
-                                    running.Remove(testPassed.FullyQualifiedName);
-                                    pending.Remove(testPassed.FullyQualifiedName);
-                                    results.Passed.Add(testPassed.FullyQualifiedName);
-                                    display.TestPassed(testPassed.DisplayName);
-                                    break;
-
-                                case TestFailedEvent testFailed:
-                                    running.Remove(testFailed.FullyQualifiedName);
-                                    pending.Remove(testFailed.FullyQualifiedName);
-                                    results.Failed.Add(testFailed.FullyQualifiedName);
-                                    display.TestFailed(testFailed.DisplayName);
-                                    failureDetails.Add((testFailed.DisplayName, testFailed.ErrorMessage, testFailed.StackTrace));
-                                    break;
-
-                                case TestSkippedEvent testSkipped:
-                                    running.Remove(testSkipped.FullyQualifiedName);
-                                    pending.Remove(testSkipped.FullyQualifiedName);
-                                    results.Skipped.Add(testSkipped.FullyQualifiedName);
-                                    display.TestSkipped(testSkipped.DisplayName);
-                                    break;
-
-                                case RunCompletedEvent:
-                                    // Mark any still-running tests as crashed (they never completed)
-                                    foreach (var fqn in running.ToList())
-                                    {
-                                        running.Remove(fqn);
-                                        pending.Remove(fqn);
-                                        results.Crashed.Add(fqn);
-                                        display.TestCrashed(fqn);
-                                    }
-                                    break;
-
-                                case ErrorEvent:
-                                    break;
-                            }
-
-                            ctx.UpdateTarget(display.Render());
-                        }
-                    }
-                    catch (TimeoutException)
-                    {
-                        foreach (var fqn in running)
-                        {
-                            pending.Remove(fqn);
-                            results.Hanging.Add(fqn);
-                            display.TestHanging(fqn);
-                        }
-                        worker.Kill();
-                        display.WorkerRestarted(pending.Count);
-                        ctx.UpdateTarget(display.Render());
-                    }
-                    catch (WorkerCrashedException)
-                    {
-                        foreach (var fqn in running)
-                        {
-                            pending.Remove(fqn);
-                            results.Crashed.Add(fqn);
-                            display.TestCrashed(fqn);
-                        }
-                        display.WorkerRestarted(pending.Count);
-                        ctx.UpdateTarget(display.Render());
-                    }
-                    catch (Exception)
-                    {
-                        worker.Kill();
-                        break;
-                    }
+                    UpdateDisplay();
+                    await Task.WhenAny(allDone, Task.Delay(100));
                 }
+
+                await allDone;
+                UpdateDisplay();
             });
 
         // Print failure details after live display
@@ -224,6 +153,124 @@ public class TestRunner
             }
             if (failureDetails.Count > 10)
                 AnsiConsole.MarkupLine($"[dim]  ...and {failureDetails.Count - 10} more[/]");
+        }
+    }
+
+    private static List<List<string>> SplitIntoBatches(List<string> tests, int batchCount)
+    {
+        var batches = new List<List<string>>();
+        for (var i = 0; i < batchCount; i++)
+            batches.Add(new List<string>());
+
+        // Round-robin distribution for balanced batches
+        for (var i = 0; i < tests.Count; i++)
+            batches[i % batchCount].Add(tests[i]);
+
+        return batches;
+    }
+
+    private async Task RunWorkerBatchAsync(
+        string assemblyPath,
+        List<string> batch,
+        int workerIndex,
+        TestResults results,
+        LiveDisplay display,
+        List<(string Name, string Message, string? Stack)> failureDetails,
+        object failureLock,
+        Action updateDisplay)
+    {
+        if (batch.Count == 0) return;
+
+        var pending = new HashSet<string>(batch);
+        var running = new HashSet<string>();
+        var attempts = 0;
+        const int maxAttempts = 100;
+
+        while (pending.Count > 0 && attempts < maxAttempts)
+        {
+            attempts++;
+            running.Clear();
+
+            await using var worker = WorkerProcess.Spawn();
+
+            try
+            {
+                using var cts = new CancellationTokenSource();
+                var testsToRun = pending.ToList();
+
+                await foreach (var msg in worker.RunAsync(assemblyPath, testsToRun, _testTimeoutSeconds, cts.Token)
+                    .WithTimeout(TimeSpan.FromSeconds(_testTimeoutSeconds), cts))
+                {
+                    switch (msg)
+                    {
+                        case TestStartedEvent started:
+                            running.Add(started.FullyQualifiedName);
+                            display.TestStarted(started.DisplayName);
+                            break;
+
+                        case TestPassedEvent testPassed:
+                            running.Remove(testPassed.FullyQualifiedName);
+                            pending.Remove(testPassed.FullyQualifiedName);
+                            lock (results) results.Passed.Add(testPassed.FullyQualifiedName);
+                            display.TestPassed(testPassed.DisplayName);
+                            break;
+
+                        case TestFailedEvent testFailed:
+                            running.Remove(testFailed.FullyQualifiedName);
+                            pending.Remove(testFailed.FullyQualifiedName);
+                            lock (results) results.Failed.Add(testFailed.FullyQualifiedName);
+                            display.TestFailed(testFailed.DisplayName);
+                            lock (failureLock) failureDetails.Add((testFailed.DisplayName, testFailed.ErrorMessage, testFailed.StackTrace));
+                            break;
+
+                        case TestSkippedEvent testSkipped:
+                            running.Remove(testSkipped.FullyQualifiedName);
+                            pending.Remove(testSkipped.FullyQualifiedName);
+                            lock (results) results.Skipped.Add(testSkipped.FullyQualifiedName);
+                            display.TestSkipped(testSkipped.DisplayName);
+                            break;
+
+                        case RunCompletedEvent:
+                            foreach (var fqn in running.ToList())
+                            {
+                                running.Remove(fqn);
+                                pending.Remove(fqn);
+                                lock (results) results.Crashed.Add(fqn);
+                                display.TestCrashed(fqn);
+                            }
+                            break;
+
+                        case ErrorEvent:
+                            break;
+                    }
+                }
+            }
+            catch (TimeoutException)
+            {
+                foreach (var fqn in running)
+                {
+                    pending.Remove(fqn);
+                    lock (results) results.Hanging.Add(fqn);
+                    display.TestHanging(fqn);
+                }
+                worker.Kill();
+                display.WorkerRestarted(pending.Count);
+            }
+            catch (WorkerCrashedException)
+            {
+                foreach (var fqn in running)
+                {
+                    pending.Remove(fqn);
+                    lock (results) results.Crashed.Add(fqn);
+                    display.TestCrashed(fqn);
+                }
+                display.WorkerRestarted(pending.Count);
+            }
+            catch (Exception)
+            {
+                worker.Kill();
+                break;
+            }
         }
     }
 
