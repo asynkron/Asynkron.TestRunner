@@ -27,6 +27,15 @@ public class LiveDisplay
     private string? _filter;
     private string? _assemblyName;
     private int _workerCount = 1;
+    private int _timeoutSeconds = 30;
+    private readonly Dictionary<int, WorkerState> _workerStates = new();
+
+    private class WorkerState
+    {
+        public DateTime LastActivity { get; set; } = DateTime.UtcNow;
+        public bool IsRestarting { get; set; }
+        public bool IsComplete { get; set; }
+    }
 
     public void SetTotal(int total)
     {
@@ -45,7 +54,47 @@ public class LiveDisplay
 
     public void SetWorkerCount(int count)
     {
-        lock (_lock) _workerCount = count;
+        lock (_lock)
+        {
+            _workerCount = count;
+            for (var i = 0; i < count; i++)
+                _workerStates[i] = new WorkerState();
+        }
+    }
+
+    public void SetTimeout(int seconds)
+    {
+        lock (_lock) _timeoutSeconds = seconds;
+    }
+
+    public void WorkerActivity(int workerIndex)
+    {
+        lock (_lock)
+        {
+            if (_workerStates.TryGetValue(workerIndex, out var state))
+            {
+                state.LastActivity = DateTime.UtcNow;
+                state.IsRestarting = false;
+            }
+        }
+    }
+
+    public void WorkerRestarting(int workerIndex)
+    {
+        lock (_lock)
+        {
+            if (_workerStates.TryGetValue(workerIndex, out var state))
+                state.IsRestarting = true;
+        }
+    }
+
+    public void WorkerComplete(int workerIndex)
+    {
+        lock (_lock)
+        {
+            if (_workerStates.TryGetValue(workerIndex, out var state))
+                state.IsComplete = true;
+        }
     }
 
     public void TestStarted(string displayName)
@@ -108,13 +157,6 @@ public class LiveDisplay
         }
     }
 
-    public void WorkerRestarted(int remaining)
-    {
-        lock (_lock)
-        {
-            _running.Clear();
-        }
-    }
 
     public IRenderable Render()
     {
@@ -142,20 +184,30 @@ public class LiveDisplay
                 new Markup($"[dim]{elapsed:mm\\:ss}[/] [dim]({rate:F1}/s)[/]")
             );
 
-            var layout = new Rows(
+            var layoutItems = new List<IRenderable>
+            {
                 grid,
                 new Text(""),
                 CreateProgressBar(completed, _total),
                 new Text(""),
                 CreateRunningSection()
-            );
+            };
+
+            // Add worker status bar if multiple workers
+            if (_workerCount > 1)
+            {
+                layoutItems.Add(new Text(""));
+                layoutItems.Add(CreateWorkerStatusBar());
+            }
+
+            var layout = new Rows(layoutItems);
 
             // Build header: show filter if set, otherwise assembly name
             var headerText = !string.IsNullOrEmpty(_filter)
                 ? $"[blue]filter[/] [green]\"{_filter}\"[/]"
                 : _assemblyName ?? "Test Progress";
 
-            var workerText = _workerCount > 1 ? $" [dim]({_workerCount} workers)[/]" : "";
+            var workerText = _workerCount > 1 ? "" : ""; // Removed from header, shown in bar now
 
             var panel = new Panel(layout)
                 .Header($"{headerText}{workerText} [blue]({completed}/{_total})[/]")
@@ -223,6 +275,49 @@ public class LiveDisplay
         }
 
         return new Rows(lines);
+    }
+
+    private IRenderable CreateWorkerStatusBar()
+    {
+        var parts = new List<string> { "[dim]workers:[/]" };
+
+        for (var i = 0; i < _workerCount; i++)
+        {
+            if (!_workerStates.TryGetValue(i, out var state))
+            {
+                parts.Add("[dim]○[/]");
+                continue;
+            }
+
+            if (state.IsComplete)
+            {
+                parts.Add("[green]✓[/]");
+                continue;
+            }
+
+            if (state.IsRestarting)
+            {
+                parts.Add("[yellow]⏳[/]");
+                continue;
+            }
+
+            // Calculate health based on time since last activity
+            var elapsed = (DateTime.UtcNow - state.LastActivity).TotalSeconds;
+            var ratio = Math.Min(1.0, elapsed / _timeoutSeconds);
+
+            // Color gradient: green → yellow → orange → red
+            var color = ratio switch
+            {
+                < 0.25 => "green",
+                < 0.5 => "yellow",
+                < 0.75 => "orange3",
+                _ => "red"
+            };
+
+            parts.Add($"[{color}]●[/]");
+        }
+
+        return new Markup(string.Join(" ", parts));
     }
 
     private static string Truncate(string text, int maxLength)

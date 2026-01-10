@@ -104,6 +104,7 @@ public class TestRunner
         display.SetFilter(_filter);
         display.SetAssembly(assemblyPath);
         display.SetWorkerCount(_workerCount);
+        display.SetTimeout(_testTimeoutSeconds);
 
         var failureDetails = new List<(string Name, string Message, string? Stack)>();
         var failureLock = new object();
@@ -205,6 +206,8 @@ public class TestRunner
                 await foreach (var msg in worker.RunAsync(assemblyPath, testsToRun, _testTimeoutSeconds, cts.Token)
                     .WithTimeout(TimeSpan.FromSeconds(_testTimeoutSeconds), cts))
                 {
+                    display.WorkerActivity(workerIndex);
+
                     switch (msg)
                     {
                         case TestStartedEvent started:
@@ -278,7 +281,7 @@ public class TestRunner
                     display.TestHanging(fqn);
                 }
                 worker.Kill();
-                display.WorkerRestarted(pending.Count);
+                display.WorkerRestarting(workerIndex);
             }
             catch (WorkerCrashedException)
             {
@@ -288,7 +291,7 @@ public class TestRunner
                     lock (results) results.Crashed.Add(fqn);
                     display.TestCrashed(fqn);
                 }
-                display.WorkerRestarted(pending.Count);
+                display.WorkerRestarting(workerIndex);
             }
             catch (Exception)
             {
@@ -303,6 +306,8 @@ public class TestRunner
             lock (results) results.Crashed.Add(fqn);
             display.TestCrashed(fqn);
         }
+
+        display.WorkerComplete(workerIndex);
     }
 
     private async Task RunWithRecoveryQuietAsync(string assemblyPath, List<string> allTests, TestResults results)
