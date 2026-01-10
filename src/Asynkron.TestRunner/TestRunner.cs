@@ -305,7 +305,16 @@ public class TestRunner
 
                     if (stuckTests.Count > 0)
                     {
-                        Log(workerIndex, $"STUCK TESTS DETECTED: {stuckTests.Count} tests exceeded {_testTimeoutSeconds * 2}s");
+                        // Also grab tests approaching timeout - worker is likely in bad state
+                        var suspiciousTests = running
+                            .Where(fqn => !stuckTests.Contains(fqn) &&
+                                          testStartTimes.TryGetValue(fqn, out var start) &&
+                                          (now - start).TotalSeconds >= _testTimeoutSeconds * 0.75)
+                            .ToList();
+
+                        Log(workerIndex, $"STUCK TESTS DETECTED: {stuckTests.Count} exceeded timeout, {suspiciousTests.Count} approaching timeout");
+
+                        // Mark definitely stuck tests as hanging
                         foreach (var fqn in stuckTests)
                         {
                             Log(workerIndex, $"HANGING (per-test timeout): {fqn}");
@@ -316,6 +325,16 @@ public class TestRunner
                             display.WorkerTestHanging(workerIndex);
                             ReportCrashedOrHanging(fqn, "hanging", testOutput, $"Test exceeded per-test timeout of {_testTimeoutSeconds * 2}s");
                         }
+
+                        // Move suspicious tests to isolated retry
+                        foreach (var fqn in suspiciousTests)
+                        {
+                            Log(workerIndex, $"SUSPICIOUS (approaching timeout): {fqn}");
+                            running.Remove(fqn);
+                            pending.Remove(fqn);
+                            suspectedCrashTests.Add(fqn);
+                        }
+
                         // Kill worker and restart with remaining tests
                         worker.Kill();
                         display.WorkerRestarting(workerIndex);
