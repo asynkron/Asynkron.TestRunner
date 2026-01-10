@@ -33,16 +33,11 @@ public class LiveDisplay
     private int _timeoutSeconds = 30;
     private readonly Dictionary<int, WorkerState> _workerStates = new();
 
-    private enum SlotStatus { Pending, Passed, Failed, Hanging, Crashed }
-
     private class WorkerState
     {
         public DateTime LastActivity { get; set; } = DateTime.UtcNow;
         public bool IsRestarting { get; set; }
         public bool IsComplete { get; set; }
-        public int BatchOffset { get; set; }
-        public int BatchSize { get; set; }
-        public List<SlotStatus> CompletedResults { get; } = new();
     }
 
     public void SetTotal(int total)
@@ -73,54 +68,6 @@ public class LiveDisplay
     public void SetTimeout(int seconds)
     {
         lock (_lock) _timeoutSeconds = seconds;
-    }
-
-    public void SetWorkerBatch(int workerIndex, int offset, int size)
-    {
-        lock (_lock)
-        {
-            if (_workerStates.TryGetValue(workerIndex, out var state))
-            {
-                state.BatchOffset = offset;
-                state.BatchSize = size;
-            }
-        }
-    }
-
-    public void WorkerTestPassed(int workerIndex)
-    {
-        lock (_lock)
-        {
-            if (_workerStates.TryGetValue(workerIndex, out var state))
-                state.CompletedResults.Add(SlotStatus.Passed);
-        }
-    }
-
-    public void WorkerTestFailed(int workerIndex)
-    {
-        lock (_lock)
-        {
-            if (_workerStates.TryGetValue(workerIndex, out var state))
-                state.CompletedResults.Add(SlotStatus.Failed);
-        }
-    }
-
-    public void WorkerTestHanging(int workerIndex)
-    {
-        lock (_lock)
-        {
-            if (_workerStates.TryGetValue(workerIndex, out var state))
-                state.CompletedResults.Add(SlotStatus.Hanging);
-        }
-    }
-
-    public void WorkerTestCrashed(int workerIndex)
-    {
-        lock (_lock)
-        {
-            if (_workerStates.TryGetValue(workerIndex, out var state))
-                state.CompletedResults.Add(SlotStatus.Crashed);
-        }
     }
 
     public void WorkerActivity(int workerIndex)
@@ -304,114 +251,23 @@ public class LiveDisplay
         var barWidth = ContentWidth - 7; // Leave room for " 100 %"
         var percentage = Math.Min(1.0, (double)completed / total);
 
-        // Collect all results in order across all workers
-        var allResults = new List<SlotStatus>();
-        if (_workerCount > 1 && _workerStates.Count > 0)
-        {
-            foreach (var (_, state) in _workerStates.OrderBy(kv => kv.Key))
-            {
-                // Pad with pending for incomplete tests in this worker's batch
-                var workerResults = new List<SlotStatus>(state.CompletedResults);
-                while (workerResults.Count < state.BatchSize)
-                    workerResults.Add(SlotStatus.Pending);
-                allResults.AddRange(workerResults);
-            }
-        }
-        else
-        {
-            // Single worker: synthesize from counts (not ideal but works)
-            allResults.AddRange(Enumerable.Repeat(SlotStatus.Passed, _passed));
-            allResults.AddRange(Enumerable.Repeat(SlotStatus.Failed, _failed));
-            allResults.AddRange(Enumerable.Repeat(SlotStatus.Hanging, _hanging));
-            allResults.AddRange(Enumerable.Repeat(SlotStatus.Crashed, _crashed));
-            while (allResults.Count < total)
-                allResults.Add(SlotStatus.Pending);
-        }
+        // Simple: show completed (green/red) then pending (grey)
+        var filledWidth = (int)(percentage * barWidth);
+        var emptyWidth = barWidth - filledWidth;
 
-        // Use gradient heat map with half-block characters (2 pixels per char)
-        var bar = RenderGradientHeatMap(allResults, total, barWidth);
+        // Calculate color based on pass/fail ratio
+        var failRatio = completed > 0 ? (double)(_failed + _crashed + _hanging) / completed : 0;
+        var color = failRatio switch
+        {
+            0 => "green",
+            < 0.1 => "yellow",
+            < 0.3 => "orange3",
+            _ => "red"
+        };
+
+        var bar = $"[{color}]{new string('█', filledWidth)}[/][dim]{new string('░', emptyWidth)}[/]";
 
         return new Markup($"{bar} [dim]{percentage:P0}[/]");
-    }
-
-    private static string RenderGradientHeatMap(List<SlotStatus> results, int total, int barWidth)
-    {
-        var bar = new System.Text.StringBuilder();
-        var pixelCount = barWidth * 2; // 2 horizontal pixels per character
-
-        for (var i = 0; i < barWidth; i++)
-        {
-            // Calculate colors for left and right pixels
-            var leftPixelIdx = i * 2;
-            var rightPixelIdx = i * 2 + 1;
-
-            var leftColor = CalculatePixelColor(results, total, leftPixelIdx, pixelCount);
-            var rightColor = CalculatePixelColor(results, total, rightPixelIdx, pixelCount);
-
-            // Use right half block: ▐
-            // Background = left color, Foreground = right color
-            bar.Append($"[rgb({rightColor.R},{rightColor.G},{rightColor.B}) on rgb({leftColor.R},{leftColor.G},{leftColor.B})]▐[/]");
-        }
-
-        return bar.ToString();
-    }
-
-    private static (int R, int G, int B) CalculatePixelColor(List<SlotStatus> results, int total, int pixelIdx, int pixelCount)
-    {
-        // Map pixel to range of tests
-        var startIdx = (int)((double)pixelIdx / pixelCount * total);
-        var endIdx = (int)((double)(pixelIdx + 1) / pixelCount * total);
-        if (endIdx <= startIdx) endIdx = startIdx + 1;
-
-        // Count statuses in this range
-        int passed = 0, failed = 0, hanging = 0, crashed = 0, pending = 0;
-        for (var j = startIdx; j < endIdx && j < results.Count; j++)
-        {
-            switch (results[j])
-            {
-                case SlotStatus.Passed: passed++; break;
-                case SlotStatus.Failed: failed++; break;
-                case SlotStatus.Hanging: hanging++; break;
-                case SlotStatus.Crashed: crashed++; break;
-                default: pending++; break;
-            }
-        }
-        // Count any indices beyond results as pending
-        pending += Math.Max(0, endIdx - results.Count);
-
-        var rangeSize = endIdx - startIdx;
-        if (rangeSize == 0) return (40, 40, 40); // dim grey for empty
-
-        // If all pending, return dim
-        if (pending == rangeSize) return (60, 60, 60);
-
-        // Calculate ratios (excluding pending from the denominator)
-        var completed = passed + failed + hanging + crashed;
-        if (completed == 0) return (60, 60, 60);
-
-        var passRatio = (double)passed / completed;
-        var failRatio = (double)failed / completed;
-        var crashRatio = (double)crashed / completed;
-        var hangRatio = (double)hanging / completed;
-
-        // Base color: interpolate green (pass) to red (fail)
-        // Green: (0, 200, 0), Red: (200, 0, 0)
-        var r = (int)(failRatio * 220 + crashRatio * 180);
-        var g = (int)(passRatio * 220);
-        var b = (int)(crashRatio * 200 + hangRatio * 150); // Blue tint for crashes/hangs
-
-        // Clamp values
-        r = Math.Clamp(r, 0, 255);
-        g = Math.Clamp(g, 0, 255);
-        b = Math.Clamp(b, 0, 255);
-
-        // Boost minimum brightness if we have results
-        if (r < 40 && g < 40 && b < 40)
-        {
-            r = g = b = 60;
-        }
-
-        return (r, g, b);
     }
 
     private static readonly string[] SpinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];

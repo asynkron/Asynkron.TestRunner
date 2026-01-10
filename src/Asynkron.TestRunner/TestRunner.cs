@@ -293,7 +293,6 @@ public class TestRunner
                             lock (results) results.Hanging.Add(fqn);
                             var displayName = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
                             display.TestHanging(displayName);
-                            display.WorkerTestHanging(workerIndex);
                             ReportCrashedOrHanging(fqn, "hanging", testOutput, $"Test exceeded {_testTimeoutSeconds * 2}s");
                         }
 
@@ -334,7 +333,6 @@ public class TestRunner
                             completedInBatch++;
                             lock (results) results.Passed.Add(testPassed.FullyQualifiedName);
                             display.TestPassed(testPassed.DisplayName);
-                            display.WorkerTestPassed(workerIndex);
                             _resultCallback?.Invoke(new TestResultDetail(
                                 testPassed.FullyQualifiedName,
                                 testPassed.DisplayName,
@@ -351,7 +349,6 @@ public class TestRunner
                             completedInBatch++;
                             lock (results) results.Failed.Add(testFailed.FullyQualifiedName);
                             display.TestFailed(testFailed.DisplayName);
-                            display.WorkerTestFailed(workerIndex);
                             lock (failureLock) failureDetails.Add((testFailed.DisplayName, testFailed.ErrorMessage, testFailed.StackTrace));
                             _resultCallback?.Invoke(new TestResultDetail(
                                 testFailed.FullyQualifiedName,
@@ -371,7 +368,6 @@ public class TestRunner
                             completedInBatch++;
                             lock (results) results.Skipped.Add(testSkipped.FullyQualifiedName);
                             display.TestSkipped(testSkipped.DisplayName);
-                            display.WorkerTestPassed(workerIndex);
                             _resultCallback?.Invoke(new TestResultDetail(
                                 testSkipped.FullyQualifiedName,
                                 testSkipped.DisplayName,
@@ -389,7 +385,6 @@ public class TestRunner
                                 lock (results) results.Crashed.Add(fqn);
                                 var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
                                 display.TestCrashed(dn);
-                                display.WorkerTestCrashed(workerIndex);
                                 ReportCrashedOrHanging(fqn, "crashed", testOutput, "Test did not report completion");
                             }
                             break;
@@ -407,7 +402,6 @@ public class TestRunner
                     lock (results) results.Crashed.Add(fqn);
                     var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
                     display.TestCrashed(dn);
-                    display.WorkerTestCrashed(workerIndex);
                     ReportCrashedOrHanging(fqn, "crashed", testOutput, "Stream ended while test running");
                 }
             }
@@ -424,7 +418,6 @@ public class TestRunner
                         lock (results) results.Hanging.Add(fqn);
                         var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
                         display.TestHanging(dn);
-                        display.WorkerTestHanging(workerIndex);
                         ReportCrashedOrHanging(fqn, "hanging", testOutput, $"Test exceeded {_testTimeoutSeconds}s");
                     }
                 }
@@ -454,7 +447,6 @@ public class TestRunner
                         lock (results) results.Crashed.Add(fqn);
                         var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
                         display.TestCrashed(dn);
-                        display.WorkerTestCrashed(workerIndex);
                         ReportCrashedOrHanging(fqn, "crashed", testOutput, $"Exit code {ex.ExitCode}");
                     }
                 }
