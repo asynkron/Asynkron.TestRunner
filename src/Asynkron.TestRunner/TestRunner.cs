@@ -162,28 +162,20 @@ public class TestRunner
         var failureDetails = new List<(string Name, string Message, string? Stack)>();
         var failureLock = new object();
 
-        // Split tests into batches for each worker
-        var batches = SplitIntoBatches(allTests, _workerCount);
-
-        // Set worker batch info for per-worker progress bars
-        var offset = 0;
-        for (var i = 0; i < batches.Count; i++)
-        {
-            display.SetWorkerBatch(i, offset, batches[i].Count);
-            offset += batches[i].Count;
-        }
+        // Shared work queue - workers pull from this
+        var queue = new WorkQueue(allTests);
+        var batchSize = Math.Max(50, allTests.Count / _workerCount / 4); // Dynamic batch size
 
         await AnsiConsole.Live(display.Render())
             .AutoClear(false)
             .StartAsync(async ctx =>
             {
-                // Create update callback that refreshes the display
                 void UpdateDisplay() => ctx.UpdateTarget(display.Render());
 
-                // Run all workers in parallel
-                var workerTasks = batches.Select((batch, index) =>
-                    RunWorkerBatchAsync(assemblyPath, batch, index, results, display, failureDetails, failureLock, UpdateDisplay, ct)
-                ).ToArray();
+                // Run all workers in parallel - they pull work from shared queue
+                var workerTasks = Enumerable.Range(0, _workerCount)
+                    .Select(index => RunWorkerAsync(assemblyPath, index, queue, batchSize, results, display, failureDetails, failureLock, UpdateDisplay, ct))
+                    .ToArray();
 
                 // Periodically refresh display while workers are running
                 var allDone = Task.WhenAll(workerTasks);
@@ -218,26 +210,14 @@ public class TestRunner
         }
     }
 
-    private static List<List<string>> SplitIntoBatches(List<string> tests, int batchCount)
-    {
-        // Chunk-based: consecutive tests stay together (siblings in same worker)
-        var batches = new List<List<string>>();
-        var chunkSize = (tests.Count + batchCount - 1) / batchCount; // Ceiling division
-
-        for (var i = 0; i < batchCount; i++)
-        {
-            var start = i * chunkSize;
-            var count = Math.Min(chunkSize, tests.Count - start);
-            batches.Add(count > 0 ? tests.GetRange(start, count) : []);
-        }
-
-        return batches;
-    }
-
-    private async Task RunWorkerBatchAsync(
+    /// <summary>
+    /// Worker loop: pulls batches from shared queue until no work remains
+    /// </summary>
+    private async Task RunWorkerAsync(
         string assemblyPath,
-        List<string> batch,
         int workerIndex,
+        WorkQueue queue,
+        int batchSize,
         TestResults results,
         LiveDisplay display,
         List<(string Name, string Message, string? Stack)> failureDetails,
@@ -245,104 +225,89 @@ public class TestRunner
         Action updateDisplay,
         CancellationToken ct)
     {
-        if (batch.Count == 0)
-        {
-            display.WorkerComplete(workerIndex);
-            return;
-        }
-
-        var pending = new HashSet<string>(batch);
         var running = new HashSet<string>();
-        var suspectedCrashTests = new HashSet<string>(); // Tests that need isolated retry
-        var testOutput = new Dictionary<string, StringBuilder>(); // Capture output per test
+        var testOutput = new Dictionary<string, StringBuilder>();
         var testStartTimes = new Dictionary<string, DateTime>();
-        var fqnToDisplayName = new Dictionary<string, string>(); // Map FQN to DisplayName for proper removal
+        var fqnToDisplayName = new Dictionary<string, string>();
 
-        Log(workerIndex, $"Starting batch: {batch.Count} tests");
+        Log(workerIndex, "Worker started");
 
-        while (pending.Count > 0 || suspectedCrashTests.Count > 0)
+        while (!ct.IsCancellationRequested)
         {
-            if (ct.IsCancellationRequested)
+            // Pull next batch from queue (suspicious tests are returned one at a time)
+            var (testsToRun, isolated) = queue.TakeBatch(workerIndex, batchSize);
+
+            if (testsToRun.Count == 0)
             {
-                display.WorkerComplete(workerIndex);
-                return;
+                // No more work - check if truly done or just waiting for other workers
+                if (queue.IsComplete)
+                {
+                    Log(workerIndex, "No more work, exiting");
+                    break;
+                }
+                // Other workers still have work, wait a bit and check again
+                await Task.Delay(100, ct);
+                continue;
             }
+
+            Log(workerIndex, isolated
+                ? $"ISOLATED: running '{testsToRun[0]}'"
+                : $"Batch of {testsToRun.Count} tests");
 
             running.Clear();
-
-            // If we have suspected crash tests, run them one at a time
-            List<string> testsToRun;
-            var isolatedMode = false;
-            if (suspectedCrashTests.Count > 0)
-            {
-                testsToRun = [suspectedCrashTests.First()];
-                isolatedMode = true;
-                Log(workerIndex, $"ISOLATED MODE: testing '{testsToRun[0]}' (suspected: {suspectedCrashTests.Count}, pending: {pending.Count})");
-            }
-            else
-            {
-                testsToRun = pending.ToList();
-                Log(workerIndex, $"Running batch of {testsToRun.Count} tests");
-            }
 
             await using var worker = WorkerProcess.Spawn();
 
             try
             {
                 using var cts = new CancellationTokenSource();
-                var pendingBeforeRun = pending.Count;
+                var completedInBatch = 0;
 
                 await foreach (var msg in worker.RunAsync(assemblyPath, testsToRun, _testTimeoutSeconds, cts.Token)
                     .WithTimeout(TimeSpan.FromSeconds(_testTimeoutSeconds), cts))
                 {
                     display.WorkerActivity(workerIndex);
 
-                    // Check for per-test timeout (test running too long while others complete)
+                    // Check for per-test timeout
                     var now = DateTime.UtcNow;
                     var stuckTests = running
                         .Where(fqn => testStartTimes.TryGetValue(fqn, out var start) &&
-                                      (now - start).TotalSeconds >= _testTimeoutSeconds * 2) // 2x timeout = definitely stuck
+                                      (now - start).TotalSeconds >= _testTimeoutSeconds * 2)
                         .ToList();
 
                     if (stuckTests.Count > 0)
                     {
-                        // Also grab tests approaching timeout - worker is likely in bad state
                         var suspiciousTests = running
                             .Where(fqn => !stuckTests.Contains(fqn) &&
                                           testStartTimes.TryGetValue(fqn, out var start) &&
                                           (now - start).TotalSeconds >= _testTimeoutSeconds * 0.75)
                             .ToList();
 
-                        Log(workerIndex, $"STUCK TESTS DETECTED: {stuckTests.Count} exceeded timeout, {suspiciousTests.Count} approaching timeout");
+                        Log(workerIndex, $"STUCK: {stuckTests.Count} exceeded timeout, {suspiciousTests.Count} suspicious");
 
-                        // Mark definitely stuck tests as hanging
                         foreach (var fqn in stuckTests)
                         {
-                            Log(workerIndex, $"HANGING (per-test timeout): {fqn}");
+                            Log(workerIndex, $"HANGING: {fqn}");
                             running.Remove(fqn);
-                            pending.Remove(fqn);
+                            queue.TestHanging(workerIndex, fqn);
                             lock (results) results.Hanging.Add(fqn);
                             var displayName = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
                             display.TestHanging(displayName);
                             display.WorkerTestHanging(workerIndex);
-                            ReportCrashedOrHanging(fqn, "hanging", testOutput, $"Test exceeded per-test timeout of {_testTimeoutSeconds * 2}s");
+                            ReportCrashedOrHanging(fqn, "hanging", testOutput, $"Test exceeded {_testTimeoutSeconds * 2}s");
                         }
 
-                        // Move suspicious tests to isolated retry
+                        queue.MarkSuspicious(workerIndex, suspiciousTests);
                         foreach (var fqn in suspiciousTests)
                         {
-                            Log(workerIndex, $"SUSPICIOUS (approaching timeout): {fqn}");
                             running.Remove(fqn);
-                            pending.Remove(fqn);
-                            suspectedCrashTests.Add(fqn);
                             var displayName = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
                             display.TestRemoved(displayName);
                         }
 
-                        // Kill worker and restart with remaining tests
                         worker.Kill();
                         display.WorkerRestarting(workerIndex);
-                        break; // Exit the foreach to restart
+                        break;
                     }
 
                     switch (msg)
@@ -365,8 +330,8 @@ public class TestRunner
 
                         case TestPassedEvent testPassed:
                             running.Remove(testPassed.FullyQualifiedName);
-                            pending.Remove(testPassed.FullyQualifiedName);
-                            suspectedCrashTests.Remove(testPassed.FullyQualifiedName);
+                            queue.TestCompleted(workerIndex, testPassed.FullyQualifiedName);
+                            completedInBatch++;
                             lock (results) results.Passed.Add(testPassed.FullyQualifiedName);
                             display.TestPassed(testPassed.DisplayName);
                             display.WorkerTestPassed(workerIndex);
@@ -375,15 +340,15 @@ public class TestRunner
                                 testPassed.DisplayName,
                                 "passed",
                                 testPassed.DurationMs,
-                                Output: testOutput.TryGetValue(testPassed.FullyQualifiedName, out var passedOutput) ? passedOutput.ToString() : null
+                                Output: testOutput.GetValueOrDefault(testPassed.FullyQualifiedName)?.ToString()
                             ));
                             testOutput.Remove(testPassed.FullyQualifiedName);
                             break;
 
                         case TestFailedEvent testFailed:
                             running.Remove(testFailed.FullyQualifiedName);
-                            pending.Remove(testFailed.FullyQualifiedName);
-                            suspectedCrashTests.Remove(testFailed.FullyQualifiedName);
+                            queue.TestCompleted(workerIndex, testFailed.FullyQualifiedName);
+                            completedInBatch++;
                             lock (results) results.Failed.Add(testFailed.FullyQualifiedName);
                             display.TestFailed(testFailed.DisplayName);
                             display.WorkerTestFailed(workerIndex);
@@ -395,18 +360,18 @@ public class TestRunner
                                 testFailed.DurationMs,
                                 testFailed.ErrorMessage,
                                 testFailed.StackTrace,
-                                testOutput.TryGetValue(testFailed.FullyQualifiedName, out var failedOutput) ? failedOutput.ToString() : null
+                                testOutput.GetValueOrDefault(testFailed.FullyQualifiedName)?.ToString()
                             ));
                             testOutput.Remove(testFailed.FullyQualifiedName);
                             break;
 
                         case TestSkippedEvent testSkipped:
                             running.Remove(testSkipped.FullyQualifiedName);
-                            pending.Remove(testSkipped.FullyQualifiedName);
-                            suspectedCrashTests.Remove(testSkipped.FullyQualifiedName);
+                            queue.TestCompleted(workerIndex, testSkipped.FullyQualifiedName);
+                            completedInBatch++;
                             lock (results) results.Skipped.Add(testSkipped.FullyQualifiedName);
                             display.TestSkipped(testSkipped.DisplayName);
-                            display.WorkerTestPassed(workerIndex); // Skipped counts as "ok" for heat map
+                            display.WorkerTestPassed(workerIndex);
                             _resultCallback?.Invoke(new TestResultDetail(
                                 testSkipped.FullyQualifiedName,
                                 testSkipped.DisplayName,
@@ -420,9 +385,10 @@ public class TestRunner
                             foreach (var fqn in running.ToList())
                             {
                                 running.Remove(fqn);
-                                pending.Remove(fqn);
+                                queue.TestCompleted(workerIndex, fqn);
                                 lock (results) results.Crashed.Add(fqn);
-                                display.TestCrashed(fqn);
+                                var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
+                                display.TestCrashed(dn);
                                 display.WorkerTestCrashed(workerIndex);
                                 ReportCrashedOrHanging(fqn, "crashed", testOutput, "Test did not report completion");
                             }
@@ -433,57 +399,43 @@ public class TestRunner
                     }
                 }
 
-                // Fallback: if stream ended but tests still running, mark as crashed
+                // Stream ended normally - mark any still-running as crashed
                 foreach (var fqn in running.ToList())
                 {
                     running.Remove(fqn);
-                    pending.Remove(fqn);
+                    queue.TestCompleted(workerIndex, fqn);
                     lock (results) results.Crashed.Add(fqn);
-                    display.TestCrashed(fqn);
+                    var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
+                    display.TestCrashed(dn);
                     display.WorkerTestCrashed(workerIndex);
-                    ReportCrashedOrHanging(fqn, "crashed", testOutput, "Stream ended while test was running");
-                }
-
-                // If no progress was made (tests never started), blame the first test and retry the rest
-                if (pending.Count > 0 && pending.Count == pendingBeforeRun)
-                {
-                    var firstTest = pending.First();
-                    pending.Remove(firstTest);
-                    lock (results) results.Crashed.Add(firstTest);
-                    display.TestCrashed(firstTest);
-                    display.WorkerTestCrashed(workerIndex);
-                    display.WorkerRestarting(workerIndex);
-                    ReportCrashedOrHanging(firstTest, "crashed", testOutput, "Test prevented batch from starting");
+                    ReportCrashedOrHanging(fqn, "crashed", testOutput, "Stream ended while test running");
                 }
             }
             catch (TimeoutException)
             {
-                Log(workerIndex, $"TIMEOUT: running={running.Count}, isolated={isolatedMode}, testsToRun={testsToRun.Count}");
-                if (isolatedMode || running.Count <= 1)
+                Log(workerIndex, $"TIMEOUT: running={running.Count}, isolated={isolated}");
+                if (isolated || running.Count <= 1)
                 {
-                    // Running single test - it's definitely hanging
-                    // Mark either the running test or the test we tried to run
                     var testsToMark = running.Count > 0 ? running.ToList() : testsToRun;
                     foreach (var fqn in testsToMark)
                     {
                         Log(workerIndex, $"HANGING (confirmed): {fqn}");
-                        pending.Remove(fqn);
-                        suspectedCrashTests.Remove(fqn);
+                        queue.TestHanging(workerIndex, fqn);
                         lock (results) results.Hanging.Add(fqn);
-                        display.TestHanging(fqn);
+                        var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
+                        display.TestHanging(dn);
                         display.WorkerTestHanging(workerIndex);
-                        ReportCrashedOrHanging(fqn, "hanging", testOutput, $"Test exceeded timeout of {_testTimeoutSeconds}s");
+                        ReportCrashedOrHanging(fqn, "hanging", testOutput, $"Test exceeded {_testTimeoutSeconds}s");
                     }
                 }
                 else
                 {
-                    // Multiple tests running - can't tell which one is hanging
-                    // Move them to suspected list for isolated retry
-                    Log(workerIndex, $"Moving {running.Count} tests to suspected list");
+                    Log(workerIndex, $"Moving {running.Count} to suspicious");
+                    queue.MarkSuspicious(workerIndex, running);
                     foreach (var fqn in running)
                     {
-                        pending.Remove(fqn);
-                        suspectedCrashTests.Add(fqn);
+                        var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
+                        display.TestRemoved(dn);
                     }
                 }
                 worker.Kill();
@@ -491,81 +443,49 @@ public class TestRunner
             }
             catch (WorkerCrashedException ex)
             {
-                Log(workerIndex, $"CRASHED: running={running.Count}, isolated={isolatedMode}, exit={ex.ExitCode}, testsToRun={testsToRun.Count}");
-                if (isolatedMode || running.Count <= 1)
+                Log(workerIndex, $"CRASHED: running={running.Count}, isolated={isolated}, exit={ex.ExitCode}");
+                if (isolated || running.Count <= 1)
                 {
-                    // Running single test - it's definitely the culprit
-                    // Mark either the running test or the test we tried to run
                     var testsToMark = running.Count > 0 ? running.ToList() : testsToRun;
                     foreach (var fqn in testsToMark)
                     {
                         Log(workerIndex, $"CRASHED (confirmed): {fqn}");
-                        pending.Remove(fqn);
-                        suspectedCrashTests.Remove(fqn);
+                        queue.TestCompleted(workerIndex, fqn);
                         lock (results) results.Crashed.Add(fqn);
-                        display.TestCrashed(fqn);
+                        var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
+                        display.TestCrashed(dn);
                         display.WorkerTestCrashed(workerIndex);
-                        ReportCrashedOrHanging(fqn, "crashed", testOutput, $"Worker crashed with exit code {ex.ExitCode}");
+                        ReportCrashedOrHanging(fqn, "crashed", testOutput, $"Exit code {ex.ExitCode}");
                     }
                 }
                 else
                 {
-                    // Multiple tests running - can't tell which one crashed
-                    // Move them to suspected list for isolated retry
-                    Log(workerIndex, $"Moving {running.Count} tests to suspected list (crash)");
+                    Log(workerIndex, $"Moving {running.Count} to suspicious (crash)");
+                    queue.MarkSuspicious(workerIndex, running);
                     foreach (var fqn in running)
                     {
-                        pending.Remove(fqn);
-                        suspectedCrashTests.Add(fqn);
+                        var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
+                        display.TestRemoved(dn);
                     }
                 }
                 display.WorkerRestarting(workerIndex);
             }
             catch (Exception ex)
             {
-                // Treat any other exception like a crash - isolate and retry
-                Log(workerIndex, $"EXCEPTION: {ex.GetType().Name}: {ex.Message}, running={running.Count}, isolated={isolatedMode}");
-                if (isolatedMode || running.Count <= 1)
+                Log(workerIndex, $"EXCEPTION: {ex.GetType().Name}: {ex.Message}");
+                // Reclaim all assigned tests back to queue
+                var reclaimed = queue.WorkerCrashed(workerIndex);
+                Log(workerIndex, $"Reclaimed {reclaimed.Count} tests");
+                foreach (var fqn in running)
                 {
-                    var testsToMark = running.Count > 0 ? running.ToList() : testsToRun;
-                    foreach (var fqn in testsToMark)
-                    {
-                        Log(workerIndex, $"CRASHED (exception): {fqn}");
-                        pending.Remove(fqn);
-                        suspectedCrashTests.Remove(fqn);
-                        lock (results) results.Crashed.Add(fqn);
-                        display.TestCrashed(fqn);
-                        display.WorkerTestCrashed(workerIndex);
-                        ReportCrashedOrHanging(fqn, "crashed", testOutput, $"{ex.GetType().Name}: {ex.Message}");
-                    }
-                }
-                else
-                {
-                    Log(workerIndex, $"Moving {running.Count} tests to suspected list (exception)");
-                    foreach (var fqn in running)
-                    {
-                        pending.Remove(fqn);
-                        suspectedCrashTests.Add(fqn);
-                    }
+                    var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
+                    display.TestRemoved(dn);
                 }
                 worker.Kill();
                 display.WorkerRestarting(workerIndex);
             }
-        }
 
-        // After all retries, mark any remaining tests as crashed
-        var remaining = pending.Concat(suspectedCrashTests).ToList();
-        if (remaining.Count > 0)
-        {
-            Log(workerIndex, $"GIVING UP on {remaining.Count} tests");
-            foreach (var fqn in remaining)
-            {
-                Log(workerIndex, $"ABANDONED: {fqn}");
-                lock (results) results.Crashed.Add(fqn);
-                display.TestCrashed(fqn);
-                display.WorkerTestCrashed(workerIndex);
-                ReportCrashedOrHanging(fqn, "crashed", testOutput, "Test abandoned after max retries");
-            }
+            running.Clear();
         }
 
         Log(workerIndex, "COMPLETE");
