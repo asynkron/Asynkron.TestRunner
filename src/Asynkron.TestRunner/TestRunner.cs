@@ -63,7 +63,14 @@ public class TestRunner
             AnsiConsole.MarkupLine($"[dim]Found {allTests.Count} tests[/]");
 
             // Run with resilient recovery
-            await RunWithRecoveryAsync(assemblyPath, allTests, results);
+            if (_quiet)
+            {
+                await RunWithRecoveryQuietAsync(assemblyPath, allTests, results);
+            }
+            else
+            {
+                await RunWithRecoveryLiveAsync(assemblyPath, allTests, results);
+            }
         }
 
         stopwatch.Stop();
@@ -73,12 +80,134 @@ public class TestRunner
         return results.Failed.Count > 0 || results.Crashed.Count > 0 || results.Hanging.Count > 0 ? 1 : 0;
     }
 
-    private async Task RunWithRecoveryAsync(string assemblyPath, List<string> allTests, TestResults results)
+    private async Task RunWithRecoveryLiveAsync(string assemblyPath, List<string> allTests, TestResults results)
     {
         var pending = new HashSet<string>(allTests);
         var running = new HashSet<string>();
         var attempts = 0;
-        const int maxAttempts = 100; // Prevent infinite loops
+        const int maxAttempts = 100;
+
+        var display = new LiveDisplay();
+        display.SetTotal(allTests.Count);
+
+        var failureDetails = new List<(string Name, string Message, string? Stack)>();
+
+        await AnsiConsole.Live(display.Render())
+            .AutoClear(false)
+            .StartAsync(async ctx =>
+            {
+                while (pending.Count > 0 && attempts < maxAttempts)
+                {
+                    attempts++;
+                    running.Clear();
+
+                    await using var worker = WorkerProcess.Spawn();
+
+                    try
+                    {
+                        using var cts = new CancellationTokenSource();
+                        var testsToRun = pending.ToList();
+
+                        await foreach (var msg in worker.RunAsync(assemblyPath, testsToRun, _testTimeoutSeconds, cts.Token)
+                            .WithTimeout(TimeSpan.FromSeconds(_testTimeoutSeconds), cts))
+                        {
+                            switch (msg)
+                            {
+                                case TestStartedEvent started:
+                                    running.Add(started.FullyQualifiedName);
+                                    display.TestStarted(started.DisplayName);
+                                    break;
+
+                                case TestPassedEvent testPassed:
+                                    running.Remove(testPassed.FullyQualifiedName);
+                                    pending.Remove(testPassed.FullyQualifiedName);
+                                    results.Passed.Add(testPassed.FullyQualifiedName);
+                                    display.TestPassed(testPassed.DisplayName);
+                                    break;
+
+                                case TestFailedEvent testFailed:
+                                    running.Remove(testFailed.FullyQualifiedName);
+                                    pending.Remove(testFailed.FullyQualifiedName);
+                                    results.Failed.Add(testFailed.FullyQualifiedName);
+                                    display.TestFailed(testFailed.DisplayName);
+                                    failureDetails.Add((testFailed.DisplayName, testFailed.ErrorMessage, testFailed.StackTrace));
+                                    break;
+
+                                case TestSkippedEvent testSkipped:
+                                    running.Remove(testSkipped.FullyQualifiedName);
+                                    pending.Remove(testSkipped.FullyQualifiedName);
+                                    results.Skipped.Add(testSkipped.FullyQualifiedName);
+                                    display.TestSkipped(testSkipped.DisplayName);
+                                    break;
+
+                                case RunCompletedEvent:
+                                    break;
+
+                                case ErrorEvent:
+                                    break;
+                            }
+
+                            ctx.UpdateTarget(display.Render());
+                        }
+                    }
+                    catch (TimeoutException)
+                    {
+                        foreach (var fqn in running)
+                        {
+                            pending.Remove(fqn);
+                            results.Hanging.Add(fqn);
+                            display.TestHanging(fqn);
+                        }
+                        worker.Kill();
+                        display.WorkerRestarted(pending.Count);
+                        ctx.UpdateTarget(display.Render());
+                    }
+                    catch (WorkerCrashedException)
+                    {
+                        foreach (var fqn in running)
+                        {
+                            pending.Remove(fqn);
+                            results.Crashed.Add(fqn);
+                            display.TestCrashed(fqn);
+                        }
+                        display.WorkerRestarted(pending.Count);
+                        ctx.UpdateTarget(display.Render());
+                    }
+                    catch (Exception)
+                    {
+                        worker.Kill();
+                        break;
+                    }
+                }
+            });
+
+        // Print failure details after live display
+        if (failureDetails.Count > 0)
+        {
+            Console.WriteLine();
+            AnsiConsole.MarkupLine($"[red]Failed tests ({failureDetails.Count}):[/]");
+            foreach (var (name, message, stack) in failureDetails.Take(10))
+            {
+                AnsiConsole.MarkupLine($"[red]  ✗[/] {EscapeMarkup(name)}");
+                AnsiConsole.MarkupLine($"[red]    {EscapeMarkup(message)}[/]");
+                if (stack != null)
+                {
+                    var firstLine = stack.Split('\n').FirstOrDefault()?.Trim();
+                    if (firstLine != null)
+                        AnsiConsole.MarkupLine($"[dim]    {EscapeMarkup(firstLine)}[/]");
+                }
+            }
+            if (failureDetails.Count > 10)
+                AnsiConsole.MarkupLine($"[dim]  ...and {failureDetails.Count - 10} more[/]");
+        }
+    }
+
+    private async Task RunWithRecoveryQuietAsync(string assemblyPath, List<string> allTests, TestResults results)
+    {
+        var pending = new HashSet<string>(allTests);
+        var running = new HashSet<string>();
+        var attempts = 0;
+        const int maxAttempts = 100;
 
         while (pending.Count > 0 && attempts < maxAttempts)
         {
@@ -99,99 +228,57 @@ public class TestRunner
                     {
                         case TestStartedEvent started:
                             running.Add(started.FullyQualifiedName);
-                            if (!_quiet)
-                                AnsiConsole.Markup($"[dim]  ►[/] {started.DisplayName}");
                             break;
 
                         case TestPassedEvent testPassed:
                             running.Remove(testPassed.FullyQualifiedName);
                             pending.Remove(testPassed.FullyQualifiedName);
                             results.Passed.Add(testPassed.FullyQualifiedName);
-                            if (!_quiet)
-                                AnsiConsole.MarkupLine($"\r[green]  ✓[/] {testPassed.DisplayName} [dim]({testPassed.DurationMs:F0}ms)[/]");
                             break;
 
                         case TestFailedEvent testFailed:
                             running.Remove(testFailed.FullyQualifiedName);
                             pending.Remove(testFailed.FullyQualifiedName);
                             results.Failed.Add(testFailed.FullyQualifiedName);
-                            AnsiConsole.MarkupLine($"\r[red]  ✗[/] {testFailed.DisplayName} [dim]({testFailed.DurationMs:F0}ms)[/]");
-                            if (!_quiet)
-                            {
-                                AnsiConsole.MarkupLine($"[red]    {EscapeMarkup(testFailed.ErrorMessage)}[/]");
-                                if (testFailed.StackTrace != null)
-                                {
-                                    var firstLine = testFailed.StackTrace.Split('\n').FirstOrDefault()?.Trim();
-                                    if (firstLine != null)
-                                        AnsiConsole.MarkupLine($"[dim]    {EscapeMarkup(firstLine)}[/]");
-                                }
-                            }
+                            AnsiConsole.MarkupLine($"[red]  ✗[/] {EscapeMarkup(testFailed.DisplayName)}");
                             break;
 
                         case TestSkippedEvent testSkipped:
                             running.Remove(testSkipped.FullyQualifiedName);
                             pending.Remove(testSkipped.FullyQualifiedName);
                             results.Skipped.Add(testSkipped.FullyQualifiedName);
-                            if (!_quiet)
-                                AnsiConsole.MarkupLine($"[yellow]  ○[/] {testSkipped.DisplayName} [dim](skipped{(testSkipped.Reason != null ? $": {testSkipped.Reason}" : "")})[/]");
-                            break;
-
-                        case TestOutputEvent output:
-                            if (!_quiet && !string.IsNullOrWhiteSpace(output.Text))
-                                AnsiConsole.MarkupLine($"[dim]    │ {EscapeMarkup(output.Text.TrimEnd())}[/]");
                             break;
 
                         case RunCompletedEvent:
-                            // All done for this worker
-                            break;
-
-                        case ErrorEvent error:
-                            AnsiConsole.MarkupLine($"[red]Worker error:[/] {error.Message}");
-                            if (error.Details != null)
-                                AnsiConsole.MarkupLine($"[dim]{error.Details}[/]");
+                        case ErrorEvent:
                             break;
                     }
                 }
             }
             catch (TimeoutException)
             {
-                // Tests in running state are hanging
                 foreach (var fqn in running)
                 {
                     pending.Remove(fqn);
                     results.Hanging.Add(fqn);
-                    AnsiConsole.MarkupLine($"\r[red]  ⏱[/] {fqn} [red](HANGING - no response for {_testTimeoutSeconds}s)[/]");
+                    AnsiConsole.MarkupLine($"[red]  ⏱[/] {fqn} [red](HANGING)[/]");
                 }
-
                 worker.Kill();
-
-                if (pending.Count > 0)
-                    AnsiConsole.MarkupLine($"[yellow]  Restarting worker to continue with {pending.Count} remaining tests...[/]");
             }
             catch (WorkerCrashedException ex)
             {
-                // Tests in running state caused crash
                 foreach (var fqn in running)
                 {
                     pending.Remove(fqn);
                     results.Crashed.Add(fqn);
-                    AnsiConsole.MarkupLine($"\r[red]  💥[/] {fqn} [red](CRASHED - worker died{(ex.ExitCode.HasValue ? $" with exit code {ex.ExitCode}" : "")})[/]");
+                    AnsiConsole.MarkupLine($"[red]  💥[/] {fqn} [red](CRASHED: {ex.ExitCode})[/]");
                 }
-
-                if (pending.Count > 0)
-                    AnsiConsole.MarkupLine($"[yellow]  Restarting worker to continue with {pending.Count} remaining tests...[/]");
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                AnsiConsole.MarkupLine($"[red]Unexpected error:[/] {ex.Message}");
                 worker.Kill();
                 break;
             }
-        }
-
-        if (attempts >= maxAttempts)
-        {
-            AnsiConsole.MarkupLine($"[red]Stopped after {maxAttempts} attempts - possible infinite crash loop[/]");
         }
     }
 
@@ -213,7 +300,6 @@ public class TestRunner
             $"[{crashColor}]{results.Crashed.Count} crashed[/] " +
             $"[dim]({elapsed.TotalSeconds:F1}s)[/]");
 
-        // Report problematic tests
         if (results.Hanging.Count > 0)
         {
             Console.WriteLine();
@@ -252,7 +338,6 @@ public class TestRunner
 
         _store.SaveResult(result);
 
-        // Check for regressions
         var recentRuns = _store.GetRecentRuns(2);
         if (recentRuns.Count >= 2)
         {
