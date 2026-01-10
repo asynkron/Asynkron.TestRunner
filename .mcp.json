@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "testrunner": {
+      "command": "dotnet",
+      "args": [
+        "run",
+        "--project",
+        "/Users/rogerjohansson/git/asynkron/Asynkron.TestRunner/src/Asynkron.TestRunner",
+        "--",
+        "mcp",
+        "--port",
+        "5123"
+      ]
+    }
+  }
+}

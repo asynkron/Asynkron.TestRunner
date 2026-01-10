@@ -176,6 +176,7 @@ public class TestRunner
                 var isolationWorkerIdCounter = 1000; // Start IDs at 1000 to distinguish from main workers
                 var activeIsolationWorkers = new List<Task>();
                 var isolationLock = new object();
+                var maxIsolationWorkers = Math.Max(4, _workerCount); // Cap concurrent isolation workers
 
                 // Run all main workers in parallel - they pull batches from shared queue
                 var mainWorkerTasks = Enumerable.Range(0, _workerCount)
@@ -187,18 +188,25 @@ public class TestRunner
                 {
                     UpdateDisplay();
 
-                    // Spawn isolation workers for suspicious tests
-                    while (queue.SuspiciousCount > 0)
-                    {
-                        var workerId = Interlocked.Increment(ref isolationWorkerIdCounter);
-                        var task = RunIsolationWorkerAsync(assemblyPath, workerId, queue, results, display, failureDetails, failureLock, UpdateDisplay, ct);
-                        lock (isolationLock) activeIsolationWorkers.Add(task);
-                    }
-
-                    // Clean up completed isolation workers
+                    // Clean up completed isolation workers first
                     lock (isolationLock)
                     {
                         activeIsolationWorkers.RemoveAll(t => t.IsCompleted);
+                    }
+
+                    // Spawn isolation workers for suspicious tests (capped)
+                    int activeCount;
+                    lock (isolationLock) activeCount = activeIsolationWorkers.Count;
+
+                    while (queue.SuspiciousCount > 0 && activeCount < maxIsolationWorkers)
+                    {
+                        var workerId = Interlocked.Increment(ref isolationWorkerIdCounter);
+                        var task = RunIsolationWorkerAsync(assemblyPath, workerId, queue, results, display, failureDetails, failureLock, UpdateDisplay, ct);
+                        lock (isolationLock)
+                        {
+                            activeIsolationWorkers.Add(task);
+                            activeCount = activeIsolationWorkers.Count;
+                        }
                     }
 
                     // Check if all work is done
@@ -438,10 +446,12 @@ public class TestRunner
             }
             catch (TimeoutException)
             {
-                Log(workerIndex, $"TIMEOUT: running={running.Count}");
-                // Move all running tests to suspicious for isolated retry
-                Log(workerIndex, $"Moving {running.Count} to suspicious");
-                queue.MarkSuspicious(workerIndex, running);
+                // Get ALL assigned tests (not just running) - some may not have started yet
+                var allAssigned = queue.GetAssigned(workerIndex);
+                Log(workerIndex, $"TIMEOUT: running={running.Count}, assigned={allAssigned.Count}");
+                // Move all assigned tests to suspicious for isolated retry
+                Log(workerIndex, $"Moving {allAssigned.Count} to suspicious");
+                queue.MarkSuspicious(workerIndex, allAssigned);
                 foreach (var fqn in running)
                 {
                     var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
@@ -452,10 +462,12 @@ public class TestRunner
             }
             catch (WorkerCrashedException ex)
             {
-                Log(workerIndex, $"CRASHED: running={running.Count}, exit={ex.ExitCode}");
-                // Move all running tests to suspicious for isolated retry
-                Log(workerIndex, $"Moving {running.Count} to suspicious (crash)");
-                queue.MarkSuspicious(workerIndex, running);
+                // Get ALL assigned tests (not just running) - some may not have started yet
+                var allAssigned = queue.GetAssigned(workerIndex);
+                Log(workerIndex, $"CRASHED: running={running.Count}, assigned={allAssigned.Count}, exit={ex.ExitCode}");
+                // Move all assigned tests to suspicious for isolated retry
+                Log(workerIndex, $"Moving {allAssigned.Count} to suspicious (crash)");
+                queue.MarkSuspicious(workerIndex, allAssigned);
                 foreach (var fqn in running)
                 {
                     var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
@@ -466,7 +478,7 @@ public class TestRunner
             catch (Exception ex)
             {
                 Log(workerIndex, $"EXCEPTION: {ex.GetType().Name}: {ex.Message}");
-                // Reclaim all assigned tests back to queue
+                // Reclaim all assigned tests back to pending queue
                 var reclaimed = queue.WorkerCrashed(workerIndex);
                 Log(workerIndex, $"Reclaimed {reclaimed.Count} tests");
                 foreach (var fqn in running)
