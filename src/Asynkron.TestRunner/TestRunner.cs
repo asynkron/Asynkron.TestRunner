@@ -244,6 +244,15 @@ public class TestRunner
                             break;
                     }
                 }
+
+                // Fallback: if stream ended but tests still running, mark as crashed
+                foreach (var fqn in running.ToList())
+                {
+                    running.Remove(fqn);
+                    pending.Remove(fqn);
+                    lock (results) results.Crashed.Add(fqn);
+                    display.TestCrashed(fqn);
+                }
             }
             catch (TimeoutException)
             {
