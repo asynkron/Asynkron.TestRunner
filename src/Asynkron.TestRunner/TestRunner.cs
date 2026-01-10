@@ -732,18 +732,7 @@ public static class AsyncEnumerableExtensions
         {
             while (true)
             {
-                using var timeoutCts = new CancellationTokenSource(timeout);
-                using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token, timeoutCts.Token);
-
-                bool hasNext;
-                try
-                {
-                    hasNext = await enumerator.MoveNextAsync();
-                }
-                catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cts.Token.IsCancellationRequested)
-                {
-                    throw new TimeoutException($"No message received within {timeout.TotalSeconds}s");
-                }
+                var hasNext = await enumerator.MoveNextAsync().AsTask().WaitAsync(timeout, cts.Token);
 
                 if (!hasNext)
                     yield break;
