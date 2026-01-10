@@ -15,6 +15,26 @@ Console.CancelKeyPress += (_, e) =>
     cts.Cancel();
 };
 
+// Monitor parent process - exit if stdin closes (parent died)
+_ = Task.Run(async () =>
+{
+    try
+    {
+        while (!cts.IsCancellationRequested)
+        {
+            // Peek at stdin - if parent died, this returns -1 immediately
+            var peek = Console.In.Peek();
+            if (peek == -1 && Console.IsInputRedirected)
+            {
+                // Parent died, exit immediately
+                Environment.Exit(0);
+            }
+            await Task.Delay(500, cts.Token);
+        }
+    }
+    catch { /* ignore */ }
+});
+
 await RunWorkerAsync(Console.In, Console.Out, frameworks, cts.Token);
 
 static async Task RunWorkerAsync(
