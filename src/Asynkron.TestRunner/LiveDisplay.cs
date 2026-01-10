@@ -33,6 +33,8 @@ public class LiveDisplay
     private int _workerCount = 1;
     private int _timeoutSeconds = 30;
     private int _suspiciousCount;
+    private int _confirmedCount;
+    private int _suspectWorkerCount;
     private int _isolationWorkerCount;
     private readonly Dictionary<int, WorkerState> _workerStates = new();
 
@@ -78,11 +80,13 @@ public class LiveDisplay
         lock (_lock) _timeoutSeconds = seconds;
     }
 
-    public void SetQueueStats(int suspiciousCount, int isolationWorkerCount)
+    public void SetQueueStats(int suspiciousCount, int confirmedCount, int suspectWorkerCount, int isolationWorkerCount)
     {
         lock (_lock)
         {
             _suspiciousCount = suspiciousCount;
+            _confirmedCount = confirmedCount;
+            _suspectWorkerCount = suspectWorkerCount;
             _isolationWorkerCount = isolationWorkerCount;
         }
     }
@@ -517,12 +521,14 @@ public class LiveDisplay
             parts.Add($"[{color}]●[/]");
         }
 
-        // Show isolation worker info
-        if (_suspiciousCount > 0 || _isolationWorkerCount > 0)
+        // Show queue stats: suspicious → suspect workers → confirmed → isolation workers
+        if (_suspiciousCount > 0 || _confirmedCount > 0 || _suspectWorkerCount > 0 || _isolationWorkerCount > 0)
         {
-            parts.Add($" [dim]|[/] [yellow]{_suspiciousCount}[/] suspicious");
-            if (_isolationWorkerCount > 0)
-                parts.Add($"[cyan]{_isolationWorkerCount}[/] isolation");
+            parts.Add(" [dim]|[/]");
+            if (_suspiciousCount > 0 || _suspectWorkerCount > 0)
+                parts.Add($"[yellow]{_suspiciousCount}[/]→[cyan]{_suspectWorkerCount}[/]");
+            if (_confirmedCount > 0 || _isolationWorkerCount > 0)
+                parts.Add($"[red]{_confirmedCount}[/]→[cyan]{_isolationWorkerCount}[/]");
         }
 
         return new Markup(string.Join(" ", parts));

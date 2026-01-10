@@ -2,13 +2,14 @@ namespace Asynkron.TestRunner;
 
 /// <summary>
 /// Thread-safe work queue for distributing tests to workers.
-/// Tracks assigned work so crashed workers' tests can be reclaimed.
+/// Three-tier queue: pending → suspicious (small batches) → confirmed (one-by-one)
 /// </summary>
 public class WorkQueue
 {
     private readonly object _lock = new();
     private readonly Queue<string> _pending = new();
-    private readonly Queue<string> _suspicious = new(); // Priority queue for isolated retry
+    private readonly Queue<string> _suspicious = new(); // First timeout - try in smaller batches
+    private readonly Queue<string> _confirmed = new();  // Second timeout - run isolated
     private readonly Dictionary<int, HashSet<string>> _assigned = new();
 
     public WorkQueue(IEnumerable<string> tests)
@@ -18,7 +19,7 @@ public class WorkQueue
     }
 
     /// <summary>
-    /// Total tests remaining (pending + suspicious + assigned)
+    /// Total tests remaining (pending + suspicious + confirmed + assigned)
     /// </summary>
     public int RemainingCount
     {
@@ -26,7 +27,7 @@ public class WorkQueue
         {
             lock (_lock)
             {
-                return _pending.Count + _suspicious.Count + _assigned.Values.Sum(h => h.Count);
+                return _pending.Count + _suspicious.Count + _confirmed.Count + _assigned.Values.Sum(h => h.Count);
             }
         }
     }
@@ -38,7 +39,7 @@ public class WorkQueue
     {
         get
         {
-            lock (_lock) return _pending.Count + _suspicious.Count;
+            lock (_lock) return _pending.Count + _suspicious.Count + _confirmed.Count;
         }
     }
 
@@ -54,13 +55,24 @@ public class WorkQueue
     }
 
     /// <summary>
-    /// Number of suspicious tests waiting for isolated retry
+    /// Number of suspicious tests waiting for small-batch retry
     /// </summary>
     public int SuspiciousCount
     {
         get
         {
             lock (_lock) return _suspicious.Count;
+        }
+    }
+
+    /// <summary>
+    /// Number of confirmed suspicious tests waiting for isolated retry
+    /// </summary>
+    public int ConfirmedCount
+    {
+        get
+        {
+            lock (_lock) return _confirmed.Count;
         }
     }
 
@@ -75,13 +87,14 @@ public class WorkQueue
             {
                 return _pending.Count == 0 &&
                        _suspicious.Count == 0 &&
+                       _confirmed.Count == 0 &&
                        _assigned.Values.All(h => h.Count == 0);
             }
         }
     }
 
     /// <summary>
-    /// Take a batch of tests for a main worker (skips suspicious tests).
+    /// Take a batch of tests for a main worker (from pending queue).
     /// </summary>
     public List<string> TakeBatch(int workerId, int maxSize)
     {
@@ -103,20 +116,44 @@ public class WorkQueue
     }
 
     /// <summary>
-    /// Take a single suspicious test for an isolation worker.
-    /// Returns null if no suspicious tests available.
+    /// Take a batch of suspicious tests for a suspect worker.
+    /// These run in smaller batches to clear tests that were just CPU-starved.
     /// </summary>
-    public string? TakeSuspicious(int workerId)
+    public List<string> TakeSuspiciousBatch(int workerId, int maxSize)
     {
         lock (_lock)
         {
-            if (_suspicious.Count == 0)
+            if (!_assigned.ContainsKey(workerId))
+                _assigned[workerId] = new HashSet<string>();
+
+            var batch = new List<string>();
+            while (batch.Count < maxSize && _suspicious.Count > 0)
+            {
+                var test = _suspicious.Dequeue();
+                batch.Add(test);
+                _assigned[workerId].Add(test);
+            }
+
+            return batch;
+        }
+    }
+
+    /// <summary>
+    /// Take a single confirmed test for an isolation worker.
+    /// These are tests that timed out even in small batches.
+    /// Returns null if no confirmed tests available.
+    /// </summary>
+    public string? TakeConfirmed(int workerId)
+    {
+        lock (_lock)
+        {
+            if (_confirmed.Count == 0)
                 return null;
 
             if (!_assigned.ContainsKey(workerId))
                 _assigned[workerId] = new HashSet<string>();
 
-            var test = _suspicious.Dequeue();
+            var test = _confirmed.Dequeue();
             _assigned[workerId].Add(test);
             return test;
         }
@@ -148,7 +185,7 @@ public class WorkQueue
     }
 
     /// <summary>
-    /// Mark tests as suspicious - they'll be retried in isolation.
+    /// Mark tests as suspicious - they'll be retried in smaller batches.
     /// </summary>
     public void MarkSuspicious(int workerId, IEnumerable<string> tests)
     {
@@ -160,6 +197,25 @@ public class WorkQueue
                 {
                     assigned.Remove(test);
                     _suspicious.Enqueue(test);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Mark tests as confirmed suspicious - they'll be retried one-by-one.
+    /// Used when tests timeout even in small batches.
+    /// </summary>
+    public void MarkConfirmed(int workerId, IEnumerable<string> tests)
+    {
+        lock (_lock)
+        {
+            if (_assigned.TryGetValue(workerId, out var assigned))
+            {
+                foreach (var test in tests)
+                {
+                    assigned.Remove(test);
+                    _confirmed.Enqueue(test);
                 }
             }
         }
