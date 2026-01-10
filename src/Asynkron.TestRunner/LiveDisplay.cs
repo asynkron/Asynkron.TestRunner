@@ -23,7 +23,7 @@ public class LiveDisplay
     private int _skipped;
     private int _hanging;
     private int _crashed;
-    private readonly HashSet<string> _running = new();
+    private readonly Dictionary<string, DateTime> _running = new();
     private string? _lastCompleted;
     private string? _lastStatus;
     private string? _filter;
@@ -154,7 +154,7 @@ public class LiveDisplay
 
     public void TestStarted(string displayName)
     {
-        lock (_lock) _running.Add(Truncate(displayName, ContentWidth));
+        lock (_lock) _running[Truncate(displayName, ContentWidth)] = DateTime.UtcNow;
     }
 
     public void TestPassed(string displayName)
@@ -424,14 +424,29 @@ public class LiveDisplay
 
         if (_running.Count > 0)
         {
-            var runningList = _running.OrderBy(x => x).Take(maxRunningLines).ToList();
+            // Sort by start time (oldest first) so stuck tests bubble to top
+            var runningList = _running.OrderBy(x => x.Value).Take(maxRunningLines).ToList();
             var baseFrame = (int)(_stopwatch.ElapsedMilliseconds / 80); // Cycle every 80ms
+            var now = DateTime.UtcNow;
 
             for (var i = 0; i < runningList.Count; i++)
             {
-                var test = runningList[i];
+                var (test, startTime) = runningList[i];
+                var age = (now - startTime).TotalSeconds;
                 var spinner = SpinnerFrames[(baseFrame + i) % SpinnerFrames.Length];
-                lines.Add(new Markup($"[cyan]{spinner}[/] [dim]{Markup.Escape(Truncate(test, textWidth))}[/]"));
+
+                // Color based on age relative to timeout
+                var ratio = age / _timeoutSeconds;
+                var color = ratio switch
+                {
+                    >= 1.0 => "red",      // Over timeout - definitely stuck
+                    >= 0.75 => "orange3", // Approaching timeout
+                    >= 0.5 => "yellow",   // Getting old
+                    _ => "dim"            // Normal
+                };
+
+                var ageStr = age >= 1 ? $" [{color}]{age:F0}s[/]" : "";
+                lines.Add(new Markup($"[cyan]{spinner}[/] [{color}]{Markup.Escape(Truncate(test, textWidth - 5))}{ageStr}[/]"));
             }
 
             if (_running.Count > maxRunningLines)
