@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Asynkron.TestRunner;
 
 return await RunAsync(args);
@@ -15,9 +14,8 @@ static async Task<int> RunAsync(string[] args)
     // Handle "stats" subcommand
     if (args.Length > 0 && args[0].Equals("stats", StringComparison.OrdinalIgnoreCase))
     {
-        var statsTestArgs = ExtractTestArgs(args, 1);
-        var statsStore = new ResultStore(statsTestArgs);
-        return HandleStats(args, statsStore, statsTestArgs);
+        var statsStore = new ResultStore();
+        return HandleStats(args, statsStore);
     }
 
     // Handle "clear" subcommand
@@ -30,97 +28,237 @@ static async Task<int> RunAsync(string[] args)
     // Handle "list" subcommand
     if (args.Length > 0 && args[0].Equals("list", StringComparison.OrdinalIgnoreCase))
     {
-        var listFilter = args.Length > 1 && !args[1].StartsWith("-") && args[1] != "--" ? args[1] : null;
-        var listTestArgs = ExtractTestArgs(args, 1) ?? ["dotnet", "test"];
-        return await HandleListAsync(listTestArgs, listFilter);
+        return await HandleListAsync(args);
+    }
+
+    // Handle "tree" subcommand - hierarchical dump
+    if (args.Length > 0 && args[0].Equals("tree", StringComparison.OrdinalIgnoreCase))
+    {
+        return await HandleTreeAsync(args);
     }
 
     // Handle "isolate" subcommand
     if (args.Length > 0 && args[0].Equals("isolate", StringComparison.OrdinalIgnoreCase))
     {
-        var isolateFilter = ParseIsolateFilter(args);
-        var isolateTimeout = ParseIsolateTimeout(args) ?? 30;
-        var isolateParallel = ParseIsolateParallel(args) ?? 1;
-        var isolateTestArgs = ExtractTestArgs(args, 1) ?? ["dotnet", "test"];
-        var isolateRunner = new IsolateRunner(isolateTestArgs, isolateTimeout, isolateFilter, isolateParallel);
-        return await isolateRunner.RunAsync(isolateFilter);
+        return await HandleIsolateAsync(args);
     }
 
     // Handle "regressions" subcommand
     if (args.Length > 0 && args[0].Equals("regressions", StringComparison.OrdinalIgnoreCase))
     {
-        var regTestArgs = ExtractTestArgs(args, 1);
-        var regStore = new ResultStore(regTestArgs);
+        var regStore = new ResultStore();
         return HandleRegressions(regStore);
     }
 
-    // Parse options before the -- separator
-    var timeout = ParseTimeout(args);
+    // Handle "run" subcommand (or default if assembly paths provided)
+    if (args.Length > 0 && (args[0].Equals("run", StringComparison.OrdinalIgnoreCase) || args[0].EndsWith(".dll", StringComparison.OrdinalIgnoreCase)))
+    {
+        return await HandleRunAsync(args);
+    }
+
+    // No valid command
+    PrintUsage();
+    return 1;
+}
+
+static async Task<int> HandleRunAsync(string[] args)
+{
+    var assemblyPaths = ExtractAssemblyPaths(args);
     var filter = ParseFilter(args);
+    var timeout = ParseTimeout(args);
     var quiet = ParseQuiet(args);
 
-    // Handle "--" separator for running tests
-    var separatorIndex = Array.IndexOf(args, "--");
-    string[] testArgs;
-
-    if (separatorIndex >= 0)
+    if (assemblyPaths.Count == 0)
     {
-        testArgs = args.Skip(separatorIndex + 1).ToArray();
-        if (testArgs.Length == 0)
-        {
-            // No command after --, default to "dotnet test"
-            testArgs = ["dotnet", "test"];
-        }
-    }
-    else if (args.Length == 0)
-    {
-        // No args at all, default to "dotnet test"
-        testArgs = ["dotnet", "test"];
-    }
-    else if (args[0].StartsWith("dotnet", StringComparison.OrdinalIgnoreCase) ||
-             args[0].Equals("test", StringComparison.OrdinalIgnoreCase))
-    {
-        // First arg looks like a command, pass everything through
-        testArgs = args[0].Equals("test", StringComparison.OrdinalIgnoreCase)
-            ? args.Prepend("dotnet").ToArray()
-            : args;
-    }
-    else if (filter != null)
-    {
-        // Has a filter pattern, default to "dotnet test"
-        testArgs = ["dotnet", "test"];
-    }
-    else if (args.All(a => a.StartsWith("-") || a.StartsWith("--") || int.TryParse(a, out _)))
-    {
-        // Only options (like --timeout 30), default to "dotnet test"
-        testArgs = ["dotnet", "test"];
-    }
-    else
-    {
-        // Unknown args, show help
-        PrintUsage();
+        Console.WriteLine("Error: No test assembly paths provided.");
+        Console.WriteLine("Usage: testrunner run <assembly.dll> [assembly2.dll...] [--filter pattern]");
         return 1;
     }
 
-    // Inject filter if specified
-    if (filter != null)
-    {
-        testArgs = InjectFilter(testArgs, filter);
-    }
-
-    var store = new ResultStore(testArgs);
+    var store = new ResultStore();
     var runner = new TestRunner(store, timeout, filter, quiet);
-    return await runner.RunTestsAsync(testArgs);
+    return await runner.RunTestsAsync(assemblyPaths.ToArray());
 }
 
-static string[]? ExtractTestArgs(string[] args, int startIndex)
+static async Task<int> HandleListAsync(string[] args)
 {
-    var separatorIndex = Array.IndexOf(args, "--", startIndex);
-    if (separatorIndex >= 0 && separatorIndex + 1 < args.Length)
+    var assemblyPaths = ExtractAssemblyPaths(args);
+    var filter = ParseFilter(args);
+
+    if (assemblyPaths.Count == 0)
     {
-        return args.Skip(separatorIndex + 1).ToArray();
+        Console.WriteLine("Error: No test assembly paths provided.");
+        Console.WriteLine("Usage: testrunner list <assembly.dll> [--filter pattern]");
+        return 1;
+    }
+
+    var testFilter = TestFilter.Parse(filter);
+    var tests = await TestDiscovery.DiscoverTestsAsync(assemblyPaths, testFilter);
+
+    Console.WriteLine($"Found {tests.Count} tests:");
+    foreach (var test in tests.OrderBy(t => t.FullyQualifiedName))
+    {
+        Console.WriteLine($"  {test.FullyQualifiedName}");
+    }
+
+    return 0;
+}
+
+static async Task<int> HandleTreeAsync(string[] args)
+{
+    var assemblyPaths = ExtractAssemblyPaths(args);
+    var filter = ParseFilter(args);
+    var outputFile = ParseOutput(args);
+
+    if (assemblyPaths.Count == 0)
+    {
+        Console.WriteLine("Error: No test assembly paths provided.");
+        Console.WriteLine("Usage: testrunner tree <assembly.dll> [--output file.md] [--filter pattern]");
+        return 1;
+    }
+
+    var testFilter = TestFilter.Parse(filter);
+    var tests = await TestDiscovery.DiscoverTestsAsync(assemblyPaths, testFilter);
+
+    Console.WriteLine($"Found {tests.Count} tests, building tree...");
+
+    // Build hierarchical structure: Namespace -> Class -> Method -> Variants
+    var tree = new SortedDictionary<string, SortedDictionary<string, SortedDictionary<string, List<string>>>>();
+
+    foreach (var test in tests)
+    {
+        if (!tree.TryGetValue(test.Namespace, out var classes))
+        {
+            classes = new SortedDictionary<string, SortedDictionary<string, List<string>>>();
+            tree[test.Namespace] = classes;
+        }
+
+        if (!classes.TryGetValue(test.ClassName, out var methods))
+        {
+            methods = new SortedDictionary<string, List<string>>();
+            classes[test.ClassName] = methods;
+        }
+
+        if (!methods.TryGetValue(test.MethodName, out var variants))
+        {
+            variants = new List<string>();
+            methods[test.MethodName] = variants;
+        }
+
+        // Add variant (display name or test case args)
+        var variant = test.TestCaseArgs ?? test.DisplayName;
+        if (variant != test.MethodName)
+        {
+            variants.Add(variant);
+        }
+    }
+
+    // Generate output
+    using var writer = outputFile != null
+        ? new StreamWriter(outputFile)
+        : new StreamWriter(Console.OpenStandardOutput());
+
+    writer.WriteLine($"# Test Hierarchy ({tests.Count} tests)");
+    writer.WriteLine();
+
+    foreach (var (ns, classes) in tree)
+    {
+        writer.WriteLine($"## {ns}");
+        writer.WriteLine();
+
+        foreach (var (className, methods) in classes)
+        {
+            writer.WriteLine($"### {className}");
+            writer.WriteLine();
+
+            foreach (var (methodName, variants) in methods)
+            {
+                if (variants.Count == 0)
+                {
+                    writer.WriteLine($"- {methodName}");
+                }
+                else if (variants.Count == 1)
+                {
+                    writer.WriteLine($"- {methodName}");
+                    writer.WriteLine($"  - {variants[0]}");
+                }
+                else
+                {
+                    writer.WriteLine($"- {methodName} ({variants.Count} variants)");
+                    foreach (var v in variants.Take(10))
+                    {
+                        writer.WriteLine($"  - {v}");
+                    }
+                    if (variants.Count > 10)
+                    {
+                        writer.WriteLine($"  - ... and {variants.Count - 10} more");
+                    }
+                }
+            }
+
+            writer.WriteLine();
+        }
+    }
+
+    if (outputFile != null)
+    {
+        Console.WriteLine($"Tree written to: {outputFile}");
+    }
+
+    return 0;
+}
+
+static string? ParseOutput(string[] args)
+{
+    for (var i = 0; i < args.Length; i++)
+    {
+        if (args[i].Equals("--output", StringComparison.OrdinalIgnoreCase) ||
+            args[i].Equals("-o", StringComparison.OrdinalIgnoreCase))
+        {
+            if (i + 1 < args.Length)
+            {
+                return args[i + 1];
+            }
+        }
     }
     return null;
+}
+
+static async Task<int> HandleIsolateAsync(string[] args)
+{
+    var assemblyPaths = ExtractAssemblyPaths(args);
+    var filter = ParseFilter(args);
+    var timeout = ParseTimeout(args) ?? 30;
+    var parallel = ParseParallel(args) ?? 1;
+
+    if (assemblyPaths.Count == 0)
+    {
+        Console.WriteLine("Error: No test assembly paths provided.");
+        Console.WriteLine("Usage: testrunner isolate <assembly.dll> [--filter pattern] [--timeout N] [--parallel N]");
+        return 1;
+    }
+
+    var isolateRunner = new IsolateRunner(assemblyPaths.ToArray(), timeout, filter, parallel);
+    return await isolateRunner.RunAsync(filter);
+}
+
+static List<string> ExtractAssemblyPaths(string[] args)
+{
+    return args
+        .Where(a => a.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) && !a.StartsWith("-"))
+        .Select(ExpandPath)
+        .Where(File.Exists)
+        .ToList();
+}
+
+static string ExpandPath(string path)
+{
+    if (path.StartsWith("~/") || path == "~")
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        return path == "~" ? home : Path.Combine(home, path[2..]);
+    }
+    return path;
 }
 
 static int? ParseTimeout(string[] args)
@@ -136,40 +274,10 @@ static int? ParseTimeout(string[] args)
             }
         }
     }
-    return null; // Use default
-}
-
-static bool ParseQuiet(string[] args)
-{
-    for (var i = 0; i < args.Length; i++)
-    {
-        if (args[i] == "--") break; // Stop at separator
-        if (args[i].Equals("--quiet", StringComparison.OrdinalIgnoreCase) ||
-            args[i].Equals("-q", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-    }
-    return false;
-}
-
-static int? ParseIsolateTimeout(string[] args)
-{
-    for (var i = 0; i < args.Length; i++)
-    {
-        if (args[i].Equals("--timeout", StringComparison.OrdinalIgnoreCase) ||
-            args[i].Equals("-t", StringComparison.OrdinalIgnoreCase))
-        {
-            if (i + 1 < args.Length && int.TryParse(args[i + 1], out var seconds))
-            {
-                return seconds;
-            }
-        }
-    }
     return null;
 }
 
-static int? ParseIsolateParallel(string[] args)
+static int? ParseParallel(string[] args)
 {
     for (var i = 0; i < args.Length; i++)
     {
@@ -180,108 +288,39 @@ static int? ParseIsolateParallel(string[] args)
             {
                 return Math.Max(1, parallel);
             }
-            // If no number follows, default to processor count
             return Environment.ProcessorCount;
         }
     }
     return null;
 }
 
-static string? ParseIsolateFilter(string[] args)
+static bool ParseQuiet(string[] args)
 {
-    // Look for a filter pattern after "isolate" but skip flags
-    for (var i = 1; i < args.Length; i++)
-    {
-        var arg = args[i];
-
-        // Stop at separator
-        if (arg == "--")
-            break;
-
-        // Skip flags and their values
-        if (arg.StartsWith("-"))
-        {
-            // Skip value of --timeout/-t and --parallel/-p
-            if ((arg.Equals("--timeout", StringComparison.OrdinalIgnoreCase) ||
-                 arg.Equals("-t", StringComparison.OrdinalIgnoreCase) ||
-                 arg.Equals("--parallel", StringComparison.OrdinalIgnoreCase) ||
-                 arg.Equals("-p", StringComparison.OrdinalIgnoreCase)) &&
-                i + 1 < args.Length)
-            {
-                i++;
-            }
-            continue;
-        }
-
-        // This looks like a filter pattern
-        return arg;
-    }
-    return null;
+    return args.Any(a =>
+        a.Equals("--quiet", StringComparison.OrdinalIgnoreCase) ||
+        a.Equals("-q", StringComparison.OrdinalIgnoreCase));
 }
 
 static string? ParseFilter(string[] args)
 {
-    // Look for a filter pattern (non-flag argument before --)
     for (var i = 0; i < args.Length; i++)
     {
-        var arg = args[i];
-
-        // Stop at separator
-        if (arg == "--")
-            break;
-
-        // Skip known subcommands
-        if (arg.Equals("stats", StringComparison.OrdinalIgnoreCase) ||
-            arg.Equals("clear", StringComparison.OrdinalIgnoreCase) ||
-            arg.Equals("regressions", StringComparison.OrdinalIgnoreCase))
-            continue;
-
-        // Skip flags and their values
-        if (arg.StartsWith("-"))
+        if (args[i].Equals("--filter", StringComparison.OrdinalIgnoreCase) ||
+            args[i].Equals("-f", StringComparison.OrdinalIgnoreCase))
         {
-            // Skip value of --timeout/-t
-            if ((arg.Equals("--timeout", StringComparison.OrdinalIgnoreCase) ||
-                 arg.Equals("-t", StringComparison.OrdinalIgnoreCase)) &&
-                i + 1 < args.Length)
+            if (i + 1 < args.Length)
             {
-                i++;
+                return args[i + 1];
             }
-            continue;
         }
-
-        // Skip command-like args
-        if (arg.Equals("dotnet", StringComparison.OrdinalIgnoreCase) ||
-            arg.Equals("test", StringComparison.OrdinalIgnoreCase))
-            continue;
-
-        // This looks like a filter pattern
-        return arg;
     }
     return null;
 }
 
-static string[] InjectFilter(string[] args, string filter)
+static int HandleStats(string[] args, ResultStore store)
 {
-    var list = args.ToList();
+    var historyCount = 10;
 
-    // Check if --filter is already specified
-    var hasFilter = list.Any(a =>
-        a.StartsWith("--filter", StringComparison.OrdinalIgnoreCase));
-
-    if (!hasFilter)
-    {
-        list.Add("--filter");
-        list.Add($"FullyQualifiedName~{filter}");
-    }
-
-    return list.ToArray();
-}
-
-static int HandleStats(string[] args, ResultStore store, string[]? testArgs)
-{
-    var historyCount = 10; // default
-
-    // Parse --history N
     for (var i = 1; i < args.Length; i++)
     {
         if (args[i].Equals("--history", StringComparison.OrdinalIgnoreCase) ||
@@ -292,11 +331,6 @@ static int HandleStats(string[] args, ResultStore store, string[]? testArgs)
                 historyCount = count;
             }
         }
-    }
-
-    if (testArgs != null)
-    {
-        Console.WriteLine($"History for: {store.CommandSignature}");
     }
 
     var results = store.GetRecentRuns(historyCount);
@@ -318,65 +352,6 @@ static int HandleClear(ResultStore store)
     return 0;
 }
 
-static async Task<int> HandleListAsync(string[] testArgs, string? filter)
-{
-    var argsList = testArgs.ToList();
-
-    // Add --list-tests flag
-    argsList.Add("--list-tests");
-
-    // Inject filter if specified
-    if (filter != null)
-    {
-        argsList.Add("--filter");
-        argsList.Add($"FullyQualifiedName~{filter}");
-    }
-
-    var executable = "dotnet";
-    var commandArgs = argsList.ToArray();
-
-    if (commandArgs.Length > 0 && commandArgs[0] == "dotnet")
-    {
-        commandArgs = commandArgs.Skip(1).ToArray();
-    }
-
-    var startInfo = new ProcessStartInfo
-    {
-        FileName = executable,
-        RedirectStandardOutput = true,
-        RedirectStandardError = true,
-        UseShellExecute = false,
-        CreateNoWindow = true
-    };
-
-    foreach (var arg in commandArgs)
-    {
-        startInfo.ArgumentList.Add(arg);
-    }
-
-    Console.WriteLine($"Listing: {executable} {string.Join(" ", commandArgs)}");
-    Console.WriteLine();
-
-    using var process = new Process { StartInfo = startInfo };
-
-    process.OutputDataReceived += (_, e) =>
-    {
-        if (e.Data != null) Console.WriteLine(e.Data);
-    };
-
-    process.ErrorDataReceived += (_, e) =>
-    {
-        if (e.Data != null) Console.Error.WriteLine(e.Data);
-    };
-
-    process.Start();
-    process.BeginOutputReadLine();
-    process.BeginErrorReadLine();
-
-    await process.WaitForExitAsync();
-    return process.ExitCode;
-}
-
 static int HandleRegressions(ResultStore store)
 {
     var runs = store.GetRecentRuns(2);
@@ -387,8 +362,8 @@ static int HandleRegressions(ResultStore store)
         return 1;
     }
 
-    var current = runs[0];  // Most recent
-    var previous = runs[1]; // Previous
+    var current = runs[0];
+    var previous = runs[1];
 
     Console.WriteLine();
     Console.WriteLine($"Comparing: {current.Timestamp:yyyy-MM-dd HH:mm} vs {previous.Timestamp:yyyy-MM-dd HH:mm}");
@@ -407,62 +382,31 @@ static int HandleRegressions(ResultStore store)
 static void PrintUsage()
 {
     Console.WriteLine("""
-        testrunner - .NET Test Runner with History
+        testrunner - Native .NET Test Runner
 
         Usage:
-          testrunner                                           Run 'dotnet test' with defaults
-          testrunner "pattern"                                 Run tests matching pattern
-          testrunner [options] -- dotnet test [test-options]   Run tests with custom command
-          testrunner list ["pattern"]                          List tests without running them
-          testrunner isolate ["pattern"]                       Find hanging test by namespace isolation
-          testrunner stats [-- <command>]                      Show history (optionally for specific command)
-          testrunner stats --history N                         Show last N runs (default: 10)
-          testrunner regressions [-- <command>]                Show regressions vs previous run
-          testrunner clear                                     Clear all test history
+          testrunner run <assembly.dll> [options]        Run tests in assembly
+          testrunner list <assembly.dll> [options]       List tests without running
+          testrunner isolate <assembly.dll> [options]    Find hanging tests
+          testrunner stats                               Show test history
+          testrunner regressions                         Compare last 2 runs
+          testrunner clear                               Clear test history
 
         Options:
-          -t, --timeout <seconds>    Hang detection timeout in seconds (default: 20)
-                                     If a test runs longer than this, the test host is killed
-                                     Use --timeout 0 to disable hang detection
-          -q, --quiet                Suppress dotnet test output, show only test tree and results
-                                     Displays test hierarchy, batch info, and pass/fail summary
-          -h, --help                 Show this help message
-
-        Filter Pattern:
-          testrunner "MyClass"           Runs: dotnet test --filter "FullyQualifiedName~MyClass"
-          testrunner "Namespace.Test"    Matches any test containing that pattern
-
-        Isolate Command:
-          Finds hanging tests by running namespace groups in isolation.
-          Drills down hierarchically until the hanging test(s) are found.
-          testrunner isolate                           Isolate in all tests
-          testrunner isolate "LanguageTests"           Isolate within matching tests
-          testrunner isolate --timeout 60 "Tests"      Use 60s timeout (default: 30s)
-          testrunner isolate --parallel 4              Run up to 4 batches concurrently
-          testrunner isolate -p                        Run batches in parallel (uses CPU count)
-
-        Isolate Options:
-          -t, --timeout <seconds>    Per-test timeout (default: 30s)
-          -p, --parallel [N]         Run N batches in parallel (default: 1, or CPU count if no N)
-                                     Parallel mode speeds up isolation by running multiple
-                                     non-hanging test groups concurrently
+          -f, --filter <pattern>       Filter tests by pattern (Class=Foo, Method=Bar)
+          -t, --timeout <seconds>      Per-test timeout (default: 20s for run, 30s for isolate)
+          -p, --parallel [N]           Run N batches in parallel (default: 1, or CPU count)
+          -q, --quiet                  Suppress verbose output
+          -h, --help                   Show this help
 
         Examples:
-          testrunner                                   Run all tests
-          testrunner -q                                Run all tests with quiet output
-          testrunner "UserService"                     Run tests matching 'UserService'
-          testrunner -q "UserService"                  Run tests matching 'UserService' quietly
-          testrunner list "UserService"                List tests matching 'UserService'
-          testrunner isolate "SlowTests"               Find hanging test in SlowTests
-          testrunner isolate -p 4 "Tests"              Isolate with 4-way parallelism
-          testrunner --timeout 60 "SlowTests"          Run matching tests with 60s timeout
-          testrunner --timeout 0                       Run all tests with no timeout
-          testrunner -- dotnet test ./tests/MyTests    Run specific project
+          testrunner run ./bin/Release/net8.0/MyTests.dll
+          testrunner run MyTests.dll --filter "Class=UserTests"
+          testrunner list MyTests.dll --filter "Method=Should"
+          testrunner isolate MyTests.dll --timeout 60 --parallel 4
 
-        History is tracked separately per:
-          - Project (git repo or current directory)
-          - Command signature (test path + filters)
-
-        This means running with --filter A won't mix with --filter B history.
+        Native Runner:
+          This runner executes xUnit and NUnit tests directly without vstest.
+          Tests are run in isolated worker processes for stability.
         """);
 }

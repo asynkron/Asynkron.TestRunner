@@ -1,349 +1,342 @@
 using System.Diagnostics;
 using Asynkron.TestRunner.Models;
+using Asynkron.TestRunner.Protocol;
+using Spectre.Console;
 
 namespace Asynkron.TestRunner;
 
+public enum TestState
+{
+    Pending,
+    Running,
+    Passed,
+    Failed,
+    Skipped,
+    Crashed,   // Worker died while test was running
+    Hanging    // No output received within timeout
+}
+
 public class TestRunner
 {
-    private const int DefaultTimeoutSeconds = 20;
-
     private readonly ResultStore _store;
-    private readonly int _timeoutSeconds;
+    private readonly int _testTimeoutSeconds;
     private readonly string? _filter;
     private readonly bool _quiet;
 
     public TestRunner(ResultStore store, int? timeoutSeconds = null, string? filter = null, bool quiet = false)
     {
         _store = store;
-        _timeoutSeconds = timeoutSeconds ?? DefaultTimeoutSeconds;
+        _testTimeoutSeconds = timeoutSeconds ?? 30;
         _filter = filter;
         _quiet = quiet;
     }
 
-    public async Task<int> RunTestsAsync(string[] args)
+    public async Task<int> RunTestsAsync(string[] assemblyPaths)
     {
-        var runId = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-        var resultsDir = Path.Combine(_store.StoreFolder, runId);
-        Directory.CreateDirectory(resultsDir);
+        var stopwatch = Stopwatch.StartNew();
+        var results = new TestResults();
 
-        // In quiet mode, discover tests first and show the tree
-        if (_quiet)
+        foreach (var assemblyPath in assemblyPaths)
         {
-            Console.WriteLine("Discovering tests...");
-            var tests = await DiscoverTestsAsync(args, _filter);
-            if (tests.Count > 0)
+            if (!File.Exists(assemblyPath))
             {
-                var tree = new TestTree();
-                tree.AddTests(tests);
-                Console.WriteLine($"Found {tests.Count} tests");
-                Console.WriteLine();
-                Console.WriteLine("Test hierarchy:");
-                tree.Render(maxDepth: 5);
-                Console.WriteLine();
-            }
-            Console.WriteLine("Running tests...");
-        }
-
-        // Build the command with TRX logger and blame-hang injected
-        var processArgs = BuildArgs(args, resultsDir, _timeoutSeconds);
-
-        // Find the executable (first arg after --)
-        var executable = "dotnet";
-        var commandArgs = processArgs;
-
-        if (processArgs.Length > 0 && processArgs[0] == "dotnet")
-        {
-            commandArgs = processArgs.Skip(1).ToArray();
-        }
-
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = executable,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-
-        foreach (var arg in commandArgs)
-        {
-            startInfo.ArgumentList.Add(arg);
-        }
-
-        if (!_quiet)
-        {
-            Console.WriteLine($"Running: {executable} {string.Join(" ", commandArgs)}");
-            Console.WriteLine();
-        }
-
-        using var process = new Process { StartInfo = startInfo };
-
-        process.OutputDataReceived += (_, e) =>
-        {
-            if (e.Data != null && !_quiet) Console.WriteLine(e.Data);
-        };
-
-        process.ErrorDataReceived += (_, e) =>
-        {
-            if (e.Data != null && !_quiet) Console.Error.WriteLine(e.Data);
-        };
-
-        process.Start();
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
-
-        await process.WaitForExitAsync();
-
-        // Get previous run for comparison before saving new result
-        var previousRun = _store.GetRecentRuns(1).FirstOrDefault();
-
-        // Parse results from all TRX files in the results directory
-        var result = TrxParser.ParseFromDirectory(resultsDir);
-        if (result != null)
-        {
-            result.Id = runId;
-            result.Timestamp = DateTime.Now;
-            _store.SaveResult(result);
-
-            Console.WriteLine();
-            ChartRenderer.RenderSingleResult(result, previousRun);
-
-            // Show history chart
-            var history = _store.GetRecentRuns(10);
-            if (history.Count > 1)
-            {
-                ChartRenderer.RenderHistory(history);
-            }
-        }
-        else
-        {
-            Console.WriteLine("Warning: No TRX results found. Was the test run successful?");
-        }
-
-        // Output timeout info for AI agents and users
-        Console.WriteLine($"[testrunner] Per-test timeout: {_timeoutSeconds}s (use --timeout <seconds> to change)");
-
-        // If hang detected (blame-hang triggered), automatically isolate to find the culprit
-        if (process.ExitCode != 0 && _timeoutSeconds > 0 && result != null)
-        {
-            // Check if the hang occurred (blame-hang would cause exit without all tests completing)
-            var expectedHang = DetectHang(result, resultsDir);
-            if (expectedHang)
-            {
-                Console.WriteLine();
-                Console.WriteLine("════════════════════════════════════════════════════════════════");
-                Console.WriteLine("HANG DETECTED - Automatically isolating to find hanging test(s)");
-                Console.WriteLine("════════════════════════════════════════════════════════════════");
-                Console.WriteLine();
-
-                // Extract base test args (remove our injected options)
-                var baseArgs = ExtractBaseTestArgs(args);
-                var isolateRunner = new IsolateRunner(baseArgs, _timeoutSeconds, _filter);
-                await isolateRunner.RunAsync(_filter);
-            }
-        }
-
-        return process.ExitCode;
-    }
-
-    private static bool DetectHang(TestRunResult result, string resultsDir)
-    {
-        // Look for blame-hang sequence file which indicates a hang was detected
-        var sequenceFiles = Directory.GetFiles(resultsDir, "Sequence_*.xml", SearchOption.AllDirectories);
-        if (sequenceFiles.Length > 0)
-            return true;
-
-        // Also check for hang dump files
-        var hangDumps = Directory.GetFiles(resultsDir, "*_hangdump*", SearchOption.AllDirectories);
-        return hangDumps.Length > 0;
-    }
-
-    private static string[] ExtractBaseTestArgs(string[] args)
-    {
-        // Remove our injected args (--logger, --results-directory, --blame-hang, etc.)
-        var result = new List<string>();
-        var skipNext = false;
-
-        foreach (var arg in args)
-        {
-            if (skipNext)
-            {
-                skipNext = false;
+                AnsiConsole.MarkupLine($"[red]Error:[/] Assembly not found: {assemblyPath}");
                 continue;
             }
 
-            if (arg.StartsWith("--logger", StringComparison.OrdinalIgnoreCase) ||
-                arg.StartsWith("--results-directory", StringComparison.OrdinalIgnoreCase) ||
-                arg.StartsWith("-r", StringComparison.OrdinalIgnoreCase) ||
-                arg.StartsWith("--blame-hang", StringComparison.OrdinalIgnoreCase))
+            AnsiConsole.MarkupLine($"[dim]Running tests in:[/] {Path.GetFileName(assemblyPath)}");
+
+            // Discover all tests upfront
+            var filter = TestFilter.Parse(_filter);
+            var discovered = await TestDiscovery.DiscoverTestsAsync([assemblyPath], filter);
+            var allTests = discovered.Select(t => t.FullyQualifiedName).ToList();
+
+            if (allTests.Count == 0)
             {
-                // Skip this arg and potentially its value
-                if (arg.Equals("--logger", StringComparison.OrdinalIgnoreCase) ||
-                    arg.Equals("--results-directory", StringComparison.OrdinalIgnoreCase) ||
-                    arg.Equals("-r", StringComparison.OrdinalIgnoreCase) ||
-                    arg.Equals("--blame-hang-timeout", StringComparison.OrdinalIgnoreCase))
-                {
-                    skipNext = true;
-                }
+                if (!string.IsNullOrWhiteSpace(_filter))
+                    AnsiConsole.MarkupLine($"[yellow]No tests match filter:[/] {_filter}");
+                else
+                    AnsiConsole.MarkupLine($"[yellow]No tests found[/]");
                 continue;
             }
 
-            result.Add(arg);
+            AnsiConsole.MarkupLine($"[dim]Found {allTests.Count} tests[/]");
+
+            // Run with resilient recovery
+            await RunWithRecoveryAsync(assemblyPath, allTests, results);
         }
 
-        return result.ToArray();
+        stopwatch.Stop();
+        PrintSummary(results, stopwatch.Elapsed);
+        SaveResults(results, stopwatch.Elapsed);
+
+        return results.Failed.Count > 0 || results.Crashed.Count > 0 || results.Hanging.Count > 0 ? 1 : 0;
     }
 
-    private static string[] BuildArgs(string[] args, string resultsDir, int timeoutSeconds)
+    private async Task RunWithRecoveryAsync(string assemblyPath, List<string> allTests, TestResults results)
     {
-        var argsList = args.ToList();
+        var pending = new HashSet<string>(allTests);
+        var running = new HashSet<string>();
+        var attempts = 0;
+        const int maxAttempts = 100; // Prevent infinite loops
 
-        // Check if logger is already specified
-        var hasLogger = argsList.Any(a =>
-            a.StartsWith("--logger", StringComparison.OrdinalIgnoreCase) ||
-            a.StartsWith("-l", StringComparison.OrdinalIgnoreCase));
-
-        if (!hasLogger)
+        while (pending.Count > 0 && attempts < maxAttempts)
         {
-            // Inject TRX logger
-            argsList.Add("--logger");
-            argsList.Add("trx");
-        }
+            attempts++;
+            running.Clear();
 
-        // Always set results directory to our folder
-        var hasResultsDir = argsList.Any(a =>
-            a.StartsWith("--results-directory", StringComparison.OrdinalIgnoreCase) ||
-            a.StartsWith("-r", StringComparison.OrdinalIgnoreCase));
+            await using var worker = WorkerProcess.Spawn();
 
-        if (!hasResultsDir)
-        {
-            argsList.Add("--results-directory");
-            argsList.Add(resultsDir);
-        }
-
-        // Add blame-hang for per-test timeout (unless already specified)
-        var hasBlameHang = argsList.Any(a =>
-            a.StartsWith("--blame-hang", StringComparison.OrdinalIgnoreCase));
-
-        if (!hasBlameHang && timeoutSeconds > 0)
-        {
-            argsList.Add("--blame-hang");
-            argsList.Add("--blame-hang-timeout");
-            argsList.Add($"{timeoutSeconds}s");
-        }
-
-        return argsList.ToArray();
-    }
-
-    private async Task<List<string>> DiscoverTestsAsync(string[] args, string? filter)
-    {
-        // Check if we have DLL files in the args (vstest mode)
-        var dllFiles = args
-            .Where(arg => arg.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) && File.Exists(arg))
-            .ToList();
-
-        if (dllFiles.Count > 0)
-        {
-            // Use structured discovery with vstest
-            var assemblies = await TestDiscovery.DiscoverTestsAsync(dllFiles);
-            var discoveredTests = new List<string>();
-
-            foreach (var assembly in assemblies)
+            try
             {
-                foreach (var ns in assembly.Namespaces)
+                using var cts = new CancellationTokenSource();
+                var testsToRun = pending.ToList();
+
+                await foreach (var msg in worker.RunAsync(assemblyPath, testsToRun, _testTimeoutSeconds, cts.Token)
+                    .WithTimeout(TimeSpan.FromSeconds(_testTimeoutSeconds), cts))
                 {
-                    foreach (var cls in ns.Classes)
+                    switch (msg)
                     {
-                        foreach (var method in cls.Methods)
-                        {
-                            // Add the fully qualified name (namespace.class.method)
-                            discoveredTests.Add(method.FullyQualifiedName);
-                        }
+                        case TestStartedEvent started:
+                            running.Add(started.FullyQualifiedName);
+                            if (!_quiet)
+                                AnsiConsole.Markup($"[dim]  ►[/] {started.DisplayName}");
+                            break;
+
+                        case TestPassedEvent testPassed:
+                            running.Remove(testPassed.FullyQualifiedName);
+                            pending.Remove(testPassed.FullyQualifiedName);
+                            results.Passed.Add(testPassed.FullyQualifiedName);
+                            if (!_quiet)
+                                AnsiConsole.MarkupLine($"\r[green]  ✓[/] {testPassed.DisplayName} [dim]({testPassed.DurationMs:F0}ms)[/]");
+                            break;
+
+                        case TestFailedEvent testFailed:
+                            running.Remove(testFailed.FullyQualifiedName);
+                            pending.Remove(testFailed.FullyQualifiedName);
+                            results.Failed.Add(testFailed.FullyQualifiedName);
+                            AnsiConsole.MarkupLine($"\r[red]  ✗[/] {testFailed.DisplayName} [dim]({testFailed.DurationMs:F0}ms)[/]");
+                            if (!_quiet)
+                            {
+                                AnsiConsole.MarkupLine($"[red]    {EscapeMarkup(testFailed.ErrorMessage)}[/]");
+                                if (testFailed.StackTrace != null)
+                                {
+                                    var firstLine = testFailed.StackTrace.Split('\n').FirstOrDefault()?.Trim();
+                                    if (firstLine != null)
+                                        AnsiConsole.MarkupLine($"[dim]    {EscapeMarkup(firstLine)}[/]");
+                                }
+                            }
+                            break;
+
+                        case TestSkippedEvent testSkipped:
+                            running.Remove(testSkipped.FullyQualifiedName);
+                            pending.Remove(testSkipped.FullyQualifiedName);
+                            results.Skipped.Add(testSkipped.FullyQualifiedName);
+                            if (!_quiet)
+                                AnsiConsole.MarkupLine($"[yellow]  ○[/] {testSkipped.DisplayName} [dim](skipped{(testSkipped.Reason != null ? $": {testSkipped.Reason}" : "")})[/]");
+                            break;
+
+                        case TestOutputEvent output:
+                            if (!_quiet && !string.IsNullOrWhiteSpace(output.Text))
+                                AnsiConsole.MarkupLine($"[dim]    │ {EscapeMarkup(output.Text.TrimEnd())}[/]");
+                            break;
+
+                        case RunCompletedEvent:
+                            // All done for this worker
+                            break;
+
+                        case ErrorEvent error:
+                            AnsiConsole.MarkupLine($"[red]Worker error:[/] {error.Message}");
+                            if (error.Details != null)
+                                AnsiConsole.MarkupLine($"[dim]{error.Details}[/]");
+                            break;
                     }
                 }
             }
-
-            // Filter if specified
-            if (filter != null)
+            catch (TimeoutException)
             {
-                discoveredTests = discoveredTests.Where(t => t.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
+                // Tests in running state are hanging
+                foreach (var fqn in running)
+                {
+                    pending.Remove(fqn);
+                    results.Hanging.Add(fqn);
+                    AnsiConsole.MarkupLine($"\r[red]  ⏱[/] {fqn} [red](HANGING - no response for {_testTimeoutSeconds}s)[/]");
+                }
+
+                worker.Kill();
+
+                if (pending.Count > 0)
+                    AnsiConsole.MarkupLine($"[yellow]  Restarting worker to continue with {pending.Count} remaining tests...[/]");
+            }
+            catch (WorkerCrashedException ex)
+            {
+                // Tests in running state caused crash
+                foreach (var fqn in running)
+                {
+                    pending.Remove(fqn);
+                    results.Crashed.Add(fqn);
+                    AnsiConsole.MarkupLine($"\r[red]  💥[/] {fqn} [red](CRASHED - worker died{(ex.ExitCode.HasValue ? $" with exit code {ex.ExitCode}" : "")})[/]");
+                }
+
+                if (pending.Count > 0)
+                    AnsiConsole.MarkupLine($"[yellow]  Restarting worker to continue with {pending.Count} remaining tests...[/]");
+            }
+            catch (Exception ex)
+            {
+                AnsiConsole.MarkupLine($"[red]Unexpected error:[/] {ex.Message}");
+                worker.Kill();
+                break;
+            }
+        }
+
+        if (attempts >= maxAttempts)
+        {
+            AnsiConsole.MarkupLine($"[red]Stopped after {maxAttempts} attempts - possible infinite crash loop[/]");
+        }
+    }
+
+    private void PrintSummary(TestResults results, TimeSpan elapsed)
+    {
+        Console.WriteLine();
+
+        var passColor = results.Passed.Count > 0 ? "green" : "dim";
+        var failColor = results.Failed.Count > 0 ? "red" : "dim";
+        var skipColor = results.Skipped.Count > 0 ? "yellow" : "dim";
+        var hangColor = results.Hanging.Count > 0 ? "red" : "dim";
+        var crashColor = results.Crashed.Count > 0 ? "red" : "dim";
+
+        AnsiConsole.MarkupLine(
+            $"[{passColor}]{results.Passed.Count} passed[/], " +
+            $"[{failColor}]{results.Failed.Count} failed[/], " +
+            $"[{skipColor}]{results.Skipped.Count} skipped[/], " +
+            $"[{hangColor}]{results.Hanging.Count} hanging[/], " +
+            $"[{crashColor}]{results.Crashed.Count} crashed[/] " +
+            $"[dim]({elapsed.TotalSeconds:F1}s)[/]");
+
+        // Report problematic tests
+        if (results.Hanging.Count > 0)
+        {
+            Console.WriteLine();
+            AnsiConsole.MarkupLine($"[red]⏱ Hanging tests ({results.Hanging.Count}):[/]");
+            foreach (var test in results.Hanging.Take(10))
+                AnsiConsole.MarkupLine($"  [red]→[/] {test}");
+            if (results.Hanging.Count > 10)
+                AnsiConsole.MarkupLine($"  [dim]...and {results.Hanging.Count - 10} more[/]");
+        }
+
+        if (results.Crashed.Count > 0)
+        {
+            Console.WriteLine();
+            AnsiConsole.MarkupLine($"[red]💥 Crashed tests ({results.Crashed.Count}):[/]");
+            foreach (var test in results.Crashed.Take(10))
+                AnsiConsole.MarkupLine($"  [red]→[/] {test}");
+            if (results.Crashed.Count > 10)
+                AnsiConsole.MarkupLine($"  [dim]...and {results.Crashed.Count - 10} more[/]");
+        }
+    }
+
+    private void SaveResults(TestResults results, TimeSpan elapsed)
+    {
+        var result = new TestRunResult
+        {
+            Id = Guid.NewGuid().ToString("N"),
+            Timestamp = DateTime.UtcNow,
+            Passed = results.Passed.Count,
+            Failed = results.Failed.Count,
+            Skipped = results.Skipped.Count,
+            Duration = elapsed,
+            PassedTests = results.Passed.ToList(),
+            FailedTests = results.Failed.ToList(),
+            TimedOutTests = results.Hanging.Concat(results.Crashed).ToList()
+        };
+
+        _store.SaveResult(result);
+
+        // Check for regressions
+        var recentRuns = _store.GetRecentRuns(2);
+        if (recentRuns.Count >= 2)
+        {
+            var previous = recentRuns[1];
+            var regressions = result.GetRegressions(previous);
+            if (regressions.Count > 0)
+            {
+                Console.WriteLine();
+                AnsiConsole.MarkupLine($"[red]⚠ {regressions.Count} regression(s) detected![/]");
+                foreach (var reg in regressions.Take(5))
+                    AnsiConsole.MarkupLine($"  [red]→[/] {reg}");
+                if (regressions.Count > 5)
+                    AnsiConsole.MarkupLine($"  [dim]...and {regressions.Count - 5} more[/]");
             }
 
-            return discoveredTests;
+            var fixes = result.GetFixes(previous);
+            if (fixes.Count > 0)
+            {
+                AnsiConsole.MarkupLine($"[green]✓ {fixes.Count} fix(es)![/]");
+            }
         }
+    }
 
-        // Fall back to dotnet test --list-tests
-        var listArgs = args.ToList();
-        listArgs.Add("--list-tests");
+    private static string EscapeMarkup(string text)
+    {
+        return text.Replace("[", "[[").Replace("]", "]]");
+    }
+}
 
-        var executable = "dotnet";
-        var commandArgs = listArgs.ToArray();
+public class TestResults
+{
+    public HashSet<string> Passed { get; } = new();
+    public HashSet<string> Failed { get; } = new();
+    public HashSet<string> Skipped { get; } = new();
+    public HashSet<string> Hanging { get; } = new();
+    public HashSet<string> Crashed { get; } = new();
+}
 
-        if (commandArgs.Length > 0 && commandArgs[0] == "dotnet")
-        {
-            commandArgs = commandArgs.Skip(1).ToArray();
-        }
+public class WorkerCrashedException : Exception
+{
+    public int? ExitCode { get; }
 
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = executable,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
+    public WorkerCrashedException(int? exitCode)
+        : base($"Worker process crashed{(exitCode.HasValue ? $" with exit code {exitCode}" : "")}")
+    {
+        ExitCode = exitCode;
+    }
+}
 
-        foreach (var arg in commandArgs)
-        {
-            startInfo.ArgumentList.Add(arg);
-        }
+public static class AsyncEnumerableExtensions
+{
+    public static async IAsyncEnumerable<T> WithTimeout<T>(
+        this IAsyncEnumerable<T> source,
+        TimeSpan timeout,
+        CancellationTokenSource cts)
+    {
+        var enumerator = source.GetAsyncEnumerator(cts.Token);
 
-        using var process = new Process { StartInfo = startInfo };
-        var output = new System.Text.StringBuilder();
-
-        process.OutputDataReceived += (_, e) =>
-        {
-            if (e.Data != null) output.AppendLine(e.Data);
-        };
-
-        process.Start();
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
-
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
         try
         {
-            await process.WaitForExitAsync(cts.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            process.Kill(true);
-        }
-
-        // Parse test names from output
-        var tests = new List<string>();
-        var inTestList = false;
-
-        foreach (var line in output.ToString().Split('\n'))
-        {
-            var trimmed = line.Trim();
-            if (trimmed.StartsWith("The following Tests are available:"))
+            while (true)
             {
-                inTestList = true;
-                continue;
-            }
-            if (inTestList && !string.IsNullOrWhiteSpace(trimmed) && !trimmed.StartsWith("Test run for"))
-            {
-                tests.Add(trimmed);
+                using var timeoutCts = new CancellationTokenSource(timeout);
+                using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token, timeoutCts.Token);
+
+                bool hasNext;
+                try
+                {
+                    hasNext = await enumerator.MoveNextAsync();
+                }
+                catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cts.Token.IsCancellationRequested)
+                {
+                    throw new TimeoutException($"No message received within {timeout.TotalSeconds}s");
+                }
+
+                if (!hasNext)
+                    yield break;
+
+                yield return enumerator.Current;
             }
         }
-
-        // Filter locally if a filter is specified
-        if (filter != null)
+        finally
         {
-            tests = tests.Where(t => t.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
+            await enumerator.DisposeAsync();
         }
-
-        return tests;
     }
 }

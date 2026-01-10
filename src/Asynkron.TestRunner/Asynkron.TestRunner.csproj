@@ -12,7 +12,7 @@
     <PackageId>Asynkron.TestRunner</PackageId>
     <Version>0.5.2</Version>
     <Authors>Asynkron</Authors>
-    <Description>A .NET global tool that wraps dotnet test, captures TRX results, tracks test history, and displays regression charts.</Description>
+    <Description>A native .NET test runner for xUnit and NUnit with test history tracking and regression detection.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/asynkron/Asynkron.TestRunner</RepositoryUrl>
     <PackageProjectUrl>https://github.com/asynkron/Asynkron.TestRunner</PackageProjectUrl>
@@ -29,9 +29,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.TestPlatform.TranslationLayer" Version="18.0.1" />
+    <ProjectReference Include="..\Asynkron.TestRunner.Protocol\Asynkron.TestRunner.Protocol.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Spectre.Console" Version="0.54.0" />
-    <PackageReference Include="Microsoft.TestPlatform.ObjectModel" Version="17.11.1" />
     <PackageReference Include="System.Reflection.MetadataLoadContext" Version="10.0.1" />
   </ItemGroup>
 

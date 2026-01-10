@@ -13,16 +13,12 @@ public class TestFilter
     public string? Method { get; set; }
     public string? DisplayName { get; set; }
 
-    /// <summary>
-    /// Parse a filter string like "Class=LanguageTests" or "Namespace=Tests"
-    /// </summary>
     public static TestFilter Parse(string? filterString)
     {
         var filter = new TestFilter();
         if (string.IsNullOrWhiteSpace(filterString))
             return filter;
 
-        // Check for key=value patterns
         var parts = filterString.Split('=', 2);
         if (parts.Length == 2)
         {
@@ -48,14 +44,12 @@ public class TestFilter
                     filter.DisplayName = value;
                     break;
                 default:
-                    // Unknown key, treat as class filter
                     filter.Class = filterString;
                     break;
             }
         }
         else
         {
-            // No key=value, treat as class filter (most common use case)
             filter.Class = filterString;
         }
 
@@ -67,7 +61,7 @@ public class TestFilter
         if (Namespace != null && !test.Namespace.Contains(Namespace, StringComparison.OrdinalIgnoreCase))
             return false;
 
-        if (Class != null && !test.ClassName.Equals(Class, StringComparison.OrdinalIgnoreCase))
+        if (Class != null && !test.ClassName.Contains(Class, StringComparison.OrdinalIgnoreCase))
             return false;
 
         if (Method != null && !test.MethodName.Contains(Method, StringComparison.OrdinalIgnoreCase))
@@ -93,7 +87,7 @@ public class TestFilter
 }
 
 /// <summary>
-/// Represents a discovered test with full metadata from VSTest platform
+/// Represents a discovered test with full metadata
 /// </summary>
 public class DiscoveredTest
 {
@@ -103,39 +97,18 @@ public class DiscoveredTest
     public required string ClassName { get; init; }
     public required string MethodName { get; init; }
     public required string Source { get; init; }
-    public Guid Id { get; init; }
-
-    /// <summary>
-    /// Get the vstest filter string to run this specific test
-    /// </summary>
-    public string GetVsTestFilter()
-    {
-        return $"FullyQualifiedName={EscapeFilter(FullyQualifiedName)}";
-    }
-
-    private static string EscapeFilter(string value)
-    {
-        return value.Replace("(", "\\(").Replace(")", "\\)");
-    }
-
+    public required TestFramework Framework { get; init; }
+    public required TestType TestType { get; init; }
+    public string? SkipReason { get; init; }
+    public string? TestCaseArgs { get; init; }  // For parameterized tests
+    public Guid Id { get; init; } = Guid.NewGuid();
 }
 
 /// <summary>
 /// Discovers tests using reflection on test assemblies
 /// </summary>
-public class TestDiscovery
+public static class TestDiscovery
 {
-    // Known test method attributes
-    private static readonly HashSet<string> TestMethodAttributes = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "TestAttribute",
-        "FactAttribute",
-        "TheoryAttribute",
-        "TestMethodAttribute",
-        "TestCaseAttribute",
-        "TestCaseSourceAttribute"
-    };
-
     /// <summary>
     /// Discovers all tests in the given assembly paths using reflection
     /// </summary>
@@ -164,7 +137,6 @@ public class TestDiscovery
             }
         }
 
-        // Apply filter if specified
         if (filter != null && !filter.IsEmpty)
         {
             allTests = allTests.Where(t => filter.Matches(t)).ToList();
@@ -177,16 +149,14 @@ public class TestDiscovery
     {
         var tests = new List<DiscoveredTest>();
 
-        // Get runtime directory for core assemblies
         var runtimeDir = System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory();
         var assemblyDir = Path.GetDirectoryName(assemblyPath)!;
 
-        // Collect all assemblies we might need
-        var assemblyPaths = new List<string> { assemblyPath };
-        assemblyPaths.AddRange(Directory.GetFiles(runtimeDir, "*.dll"));
-        assemblyPaths.AddRange(Directory.GetFiles(assemblyDir, "*.dll"));
+        var paths = new List<string> { assemblyPath };
+        paths.AddRange(Directory.GetFiles(runtimeDir, "*.dll"));
+        paths.AddRange(Directory.GetFiles(assemblyDir, "*.dll"));
 
-        var resolver = new PathAssemblyResolver(assemblyPaths.Distinct());
+        var resolver = new PathAssemblyResolver(paths.Distinct());
         using var mlc = new MetadataLoadContext(resolver, "System.Private.CoreLib");
 
         try
@@ -201,48 +171,49 @@ public class TestDiscovery
                 var className = type.Name;
                 var namespaceName = type.Namespace ?? "";
 
-                // Find test methods
                 foreach (var method in type.GetMethods(BindingFlags.Public | BindingFlags.Instance))
                 {
-                    var hasTestAttribute = method.CustomAttributes.Any(attr =>
-                        TestMethodAttributes.Contains(attr.AttributeType.Name));
-
-                    if (!hasTestAttribute)
+                    var testInfo = AnalyzeTestMethod(method);
+                    if (testInfo == null)
                         continue;
 
-                    // Check for test cases (parameterized tests)
-                    var testCases = GetTestCases(method);
+                    var (framework, testType, skipReason, testCases) = testInfo.Value;
+                    var fqn = $"{namespaceName}.{className}.{method.Name}";
 
                     if (testCases.Count > 0)
                     {
-                        // Parameterized test - create a DiscoveredTest for each case
+                        // Parameterized test - create entry for each test case
                         foreach (var testCase in testCases)
                         {
-                            var displayName = $"{method.Name}({testCase})";
                             tests.Add(new DiscoveredTest
                             {
-                                FullyQualifiedName = $"{namespaceName}.{className}.{method.Name}",
-                                DisplayName = displayName,
+                                FullyQualifiedName = fqn,
+                                DisplayName = $"{method.Name}({testCase})",
                                 Namespace = namespaceName,
                                 ClassName = className,
                                 MethodName = method.Name,
                                 Source = assemblyPath,
-                                Id = Guid.NewGuid()
+                                Framework = framework,
+                                TestType = testType,
+                                SkipReason = skipReason,
+                                TestCaseArgs = testCase
                             });
                         }
                     }
                     else
                     {
-                        // Simple test method
+                        // Simple test
                         tests.Add(new DiscoveredTest
                         {
-                            FullyQualifiedName = $"{namespaceName}.{className}.{method.Name}",
+                            FullyQualifiedName = fqn,
                             DisplayName = method.Name,
                             Namespace = namespaceName,
                             ClassName = className,
                             MethodName = method.Name,
                             Source = assemblyPath,
-                            Id = Guid.NewGuid()
+                            Framework = framework,
+                            TestType = testType,
+                            SkipReason = skipReason
                         });
                     }
                 }
@@ -256,38 +227,123 @@ public class TestDiscovery
         return tests;
     }
 
-    private static List<string> GetTestCases(MethodInfo method)
+    private static (TestFramework Framework, TestType Type, string? SkipReason, List<string> TestCases)?
+        AnalyzeTestMethod(MethodInfo method)
     {
-        var cases = new List<string>();
+        TestFramework? framework = null;
+        TestType testType = TestType.Fact;
+        string? skipReason = null;
+        var testCases = new List<string>();
 
         foreach (var attr in method.CustomAttributes)
         {
-            if (attr.AttributeType.Name == "TestCaseAttribute")
-            {
-                // Get constructor arguments as test case parameters
-                var args = attr.ConstructorArguments
-                    .Select(arg => FormatArgumentValue(arg.Value))
-                    .ToList();
+            var attrName = attr.AttributeType.Name;
 
-                cases.Add(string.Join(",", args));
+            switch (attrName)
+            {
+                // xUnit
+                case "FactAttribute":
+                    framework = TestFramework.XUnit;
+                    testType = TestType.Fact;
+                    skipReason = GetNamedArgument<string>(attr, "Skip");
+                    break;
+
+                case "TheoryAttribute":
+                    framework = TestFramework.XUnit;
+                    testType = TestType.Theory;
+                    skipReason = GetNamedArgument<string>(attr, "Skip");
+                    break;
+
+                case "InlineDataAttribute":
+                    // xUnit parameterized data
+                    var inlineArgs = attr.ConstructorArguments
+                        .SelectMany(a => a.Value is IEnumerable<CustomAttributeTypedArgument> arr
+                            ? arr.Select(x => FormatArgValue(x.Value))
+                            : [FormatArgValue(a.Value)])
+                        .ToList();
+                    testCases.Add(string.Join(", ", inlineArgs));
+                    break;
+
+                // NUnit
+                case "TestAttribute":
+                    framework = TestFramework.NUnit;
+                    testType = TestType.Fact;
+                    break;
+
+                case "TestCaseAttribute":
+                    framework = TestFramework.NUnit;
+                    testType = TestType.Theory;
+                    var nunitArgs = attr.ConstructorArguments
+                        .Select(a => FormatArgValue(a.Value))
+                        .ToList();
+                    testCases.Add(string.Join(", ", nunitArgs));
+                    break;
+
+                case "TestCaseSourceAttribute":
+                    framework = TestFramework.NUnit;
+                    testType = TestType.Theory;
+                    // Can't resolve actual values at discovery time, mark as dynamic
+                    if (testCases.Count == 0)
+                        testCases.Add("...");  // Placeholder for dynamic cases
+                    break;
+
+                case "IgnoreAttribute":
+                    // NUnit skip
+                    skipReason = GetConstructorArgument<string>(attr, 0) ?? "Ignored";
+                    break;
+
+                // MSTest
+                case "TestMethodAttribute":
+                    framework = TestFramework.MSTest;
+                    testType = TestType.Fact;
+                    break;
+
+                case "DataRowAttribute":
+                    framework = TestFramework.MSTest;
+                    testType = TestType.Theory;
+                    var msArgs = attr.ConstructorArguments
+                        .Select(a => FormatArgValue(a.Value))
+                        .ToList();
+                    testCases.Add(string.Join(", ", msArgs));
+                    break;
             }
         }
 
-        return cases;
+        if (framework == null)
+            return null;
+
+        return (framework.Value, testType, skipReason, testCases);
     }
 
-    private static string FormatArgumentValue(object? value)
+    private static T? GetNamedArgument<T>(CustomAttributeData attr, string name)
+    {
+        var arg = attr.NamedArguments.FirstOrDefault(a => a.MemberName == name);
+        if (arg.TypedValue.Value is T value)
+            return value;
+        return default;
+    }
+
+    private static T? GetConstructorArgument<T>(CustomAttributeData attr, int index)
+    {
+        if (index < attr.ConstructorArguments.Count && attr.ConstructorArguments[index].Value is T value)
+            return value;
+        return default;
+    }
+
+    private static string FormatArgValue(object? value)
     {
         return value switch
         {
             null => "null",
             string s => $"\"{s}\"",
-            bool b => b.ToString(),
+            bool b => b ? "true" : "false",
+            char c => $"'{c}'",
             _ => value.ToString() ?? "null"
         };
     }
 
-    // Keep the old API for backwards compatibility
+    #region Legacy API for backwards compatibility
+
     public static async Task<List<TestAssemblyDescriptor>> DiscoverTestsAsync(IEnumerable<string> assemblyPaths)
     {
         var tests = await DiscoverTestsAsync(assemblyPaths, null);
@@ -305,14 +361,14 @@ public class TestDiscovery
 
             foreach (var test in assemblyGroup)
             {
-                if (!namespaceGroups.TryGetValue(test.Namespace, out var namespaceDesc))
+                if (!namespaceGroups.TryGetValue(test.Namespace, out var nsDesc))
                 {
-                    namespaceDesc = new TestNamespaceDescriptor { Namespace = test.Namespace };
-                    namespaceGroups[test.Namespace] = namespaceDesc;
+                    nsDesc = new TestNamespaceDescriptor { Namespace = test.Namespace };
+                    namespaceGroups[test.Namespace] = nsDesc;
                 }
 
                 var classKey = $"{test.Namespace}.{test.ClassName}";
-                var testClass = namespaceDesc.Classes.FirstOrDefault(c => c.FullyQualifiedName == classKey);
+                var testClass = nsDesc.Classes.FirstOrDefault(c => c.FullyQualifiedName == classKey);
 
                 if (testClass == null)
                 {
@@ -322,27 +378,28 @@ public class TestDiscovery
                         ClassName = test.ClassName,
                         FullyQualifiedName = classKey
                     };
-                    namespaceDesc.Classes.Add(testClass);
+                    nsDesc.Classes.Add(testClass);
                 }
 
-                var existingMethod = testClass.Methods.FirstOrDefault(m => m.MethodName == test.MethodName);
-                if (existingMethod != null)
+                var existing = testClass.Methods.FirstOrDefault(m => m.MethodName == test.MethodName);
+                if (existing != null)
                 {
-                    var updatedMethod = new TestDescriptor
+                    // Multiple test cases for same method - update count
+                    var updated = new TestDescriptor
                     {
-                        Namespace = existingMethod.Namespace,
-                        ClassName = existingMethod.ClassName,
-                        MethodName = existingMethod.MethodName,
-                        FullyQualifiedName = existingMethod.FullyQualifiedName,
-                        Framework = existingMethod.Framework,
+                        Namespace = existing.Namespace,
+                        ClassName = existing.ClassName,
+                        MethodName = existing.MethodName,
+                        FullyQualifiedName = existing.FullyQualifiedName,
+                        Framework = existing.Framework,
                         Type = TestType.Theory,
-                        TestCaseCount = existingMethod.TestCaseCount + 1,
-                        DisplayName = existingMethod.DisplayName,
-                        SkipReason = existingMethod.SkipReason,
-                        Traits = existingMethod.Traits
+                        TestCaseCount = existing.TestCaseCount + 1,
+                        DisplayName = existing.DisplayName,
+                        SkipReason = existing.SkipReason,
+                        Traits = existing.Traits
                     };
-                    testClass.Methods.Remove(existingMethod);
-                    testClass.Methods.Add(updatedMethod);
+                    testClass.Methods.Remove(existing);
+                    testClass.Methods.Add(updated);
                 }
                 else
                 {
@@ -352,11 +409,11 @@ public class TestDiscovery
                         ClassName = test.ClassName,
                         MethodName = test.MethodName,
                         FullyQualifiedName = test.FullyQualifiedName,
-                        Framework = TestFramework.Unknown,
-                        Type = TestType.Fact,
+                        Framework = test.Framework,
+                        Type = test.TestType,
                         TestCaseCount = 1,
                         DisplayName = test.DisplayName,
-                        SkipReason = null,
+                        SkipReason = test.SkipReason,
                         Traits = new Dictionary<string, string>()
                     });
                 }
@@ -372,4 +429,6 @@ public class TestDiscovery
 
         return results;
     }
+
+    #endregion
 }

@@ -55,19 +55,4 @@ public class IsolateRunnerTests
         Assert.Equal(15, runner.TimeoutStrategy.GetTimeout(1));
     }
 
-    [Fact]
-    public void IsolatedHangingTests_InitiallyEmpty()
-    {
-        var runner = new IsolateRunner(["dotnet", "test"]);
-
-        Assert.Empty(runner.IsolatedHangingTests);
-    }
-
-    [Fact]
-    public void FailedBatches_InitiallyEmpty()
-    {
-        var runner = new IsolateRunner(["dotnet", "test"]);
-
-        Assert.Empty(runner.FailedBatches);
-    }
 }

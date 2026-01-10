@@ -19,3 +19,4 @@
 
 # Local test scripts
 test-jsengine.sh
+InternalTrace.*.log
