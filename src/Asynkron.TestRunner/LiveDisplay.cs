@@ -9,6 +9,9 @@ namespace Asynkron.TestRunner;
 /// </summary>
 public class LiveDisplay
 {
+    private const int PanelWidth = 80;
+    private const int ContentWidth = PanelWidth - 4; // Account for panel borders
+
     private readonly Stopwatch _stopwatch = Stopwatch.StartNew();
     private readonly object _lock = new();
 
@@ -29,7 +32,7 @@ public class LiveDisplay
 
     public void TestStarted(string displayName)
     {
-        lock (_lock) _running.Add(Truncate(displayName, 60));
+        lock (_lock) _running.Add(Truncate(displayName, ContentWidth));
     }
 
     public void TestPassed(string displayName)
@@ -37,7 +40,7 @@ public class LiveDisplay
         lock (_lock)
         {
             _passed++;
-            _running.Remove(Truncate(displayName, 60));
+            _running.Remove(Truncate(displayName, ContentWidth));
             _lastCompleted = displayName;
             _lastStatus = "[green]✓[/]";
         }
@@ -48,7 +51,7 @@ public class LiveDisplay
         lock (_lock)
         {
             _failed++;
-            _running.Remove(Truncate(displayName, 60));
+            _running.Remove(Truncate(displayName, ContentWidth));
             _lastCompleted = displayName;
             _lastStatus = "[red]✗[/]";
         }
@@ -59,7 +62,7 @@ public class LiveDisplay
         lock (_lock)
         {
             _skipped++;
-            _running.Remove(Truncate(displayName, 60));
+            _running.Remove(Truncate(displayName, ContentWidth));
             _lastCompleted = displayName;
             _lastStatus = "[yellow]○[/]";
         }
@@ -70,7 +73,7 @@ public class LiveDisplay
         lock (_lock)
         {
             _hanging++;
-            _running.Remove(Truncate(displayName, 60));
+            _running.Remove(Truncate(displayName, ContentWidth));
             _lastCompleted = displayName;
             _lastStatus = "[red]⏱[/]";
         }
@@ -81,7 +84,7 @@ public class LiveDisplay
         lock (_lock)
         {
             _crashed++;
-            _running.Remove(Truncate(displayName, 60));
+            _running.Remove(Truncate(displayName, ContentWidth));
             _lastCompleted = displayName;
             _lastStatus = "[red]💥[/]";
         }
@@ -129,10 +132,18 @@ public class LiveDisplay
                 CreateRunningSection()
             );
 
-            return new Panel(layout)
+            var panel = new Panel(layout)
                 .Header($"[bold]Test Progress[/] [dim]({completed}/{_total})[/]")
                 .Border(BoxBorder.Rounded)
-                .BorderColor(Color.Grey);
+                .BorderColor(Color.Grey)
+                .Expand();
+
+            // Wrap in a fixed-width container
+            var table = new Table().NoBorder().HideHeaders();
+            table.AddColumn(new TableColumn("").Width(PanelWidth));
+            table.AddRow(panel);
+
+            return table;
         }
     }
 
@@ -140,10 +151,10 @@ public class LiveDisplay
     {
         if (total == 0) return new Text("");
 
-        var percentage = (double)completed / total;
-        var width = Math.Min(60, Console.WindowWidth - 10);
-        var filled = (int)(percentage * width);
-        var empty = width - filled;
+        var percentage = Math.Min(1.0, (double)completed / total);
+        var barWidth = ContentWidth - 7; // Leave room for " 100 %"
+        var filled = (int)(percentage * barWidth);
+        var empty = barWidth - filled;
 
         var color = _failed > 0 || _crashed > 0 || _hanging > 0 ? "red" : "green";
         var bar = $"[{color}]{new string('█', filled)}[/][dim]{new string('░', empty)}[/]";
@@ -154,10 +165,11 @@ public class LiveDisplay
     private IRenderable CreateRunningSection()
     {
         var lines = new List<IRenderable>();
+        var textWidth = ContentWidth - 4; // Leave room for status icon and spacing
 
         if (_lastCompleted != null && _lastStatus != null)
         {
-            lines.Add(new Markup($"{_lastStatus} {Markup.Escape(Truncate(_lastCompleted, 70))}"));
+            lines.Add(new Markup($"{_lastStatus} {Markup.Escape(Truncate(_lastCompleted, textWidth))}"));
         }
 
         if (_running.Count > 0)
@@ -165,7 +177,7 @@ public class LiveDisplay
             var runningList = _running.Take(3).ToList();
             foreach (var test in runningList)
             {
-                lines.Add(new Markup($"[dim]► {Markup.Escape(test)}[/]"));
+                lines.Add(new Markup($"[dim]► {Markup.Escape(Truncate(test, textWidth))}[/]"));
             }
             if (_running.Count > 3)
             {
