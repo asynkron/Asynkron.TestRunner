@@ -40,9 +40,6 @@ public class LiveDisplay
         public DateTime LastActivity { get; set; } = DateTime.UtcNow;
         public bool IsRestarting { get; set; }
         public bool IsComplete { get; set; }
-        public int BatchOffset { get; set; }
-        public int BatchSize { get; set; }
-        public List<SlotStatus> CompletedResults { get; } = new();
     }
 
     public void SetTotal(int total)
@@ -73,54 +70,6 @@ public class LiveDisplay
     public void SetTimeout(int seconds)
     {
         lock (_lock) _timeoutSeconds = seconds;
-    }
-
-    public void SetWorkerBatch(int workerIndex, int offset, int size)
-    {
-        lock (_lock)
-        {
-            if (_workerStates.TryGetValue(workerIndex, out var state))
-            {
-                state.BatchOffset = offset;
-                state.BatchSize = size;
-            }
-        }
-    }
-
-    public void WorkerTestPassed(int workerIndex)
-    {
-        lock (_lock)
-        {
-            if (_workerStates.TryGetValue(workerIndex, out var state))
-                state.CompletedResults.Add(SlotStatus.Passed);
-        }
-    }
-
-    public void WorkerTestFailed(int workerIndex)
-    {
-        lock (_lock)
-        {
-            if (_workerStates.TryGetValue(workerIndex, out var state))
-                state.CompletedResults.Add(SlotStatus.Failed);
-        }
-    }
-
-    public void WorkerTestHanging(int workerIndex)
-    {
-        lock (_lock)
-        {
-            if (_workerStates.TryGetValue(workerIndex, out var state))
-                state.CompletedResults.Add(SlotStatus.Hanging);
-        }
-    }
-
-    public void WorkerTestCrashed(int workerIndex)
-    {
-        lock (_lock)
-        {
-            if (_workerStates.TryGetValue(workerIndex, out var state))
-                state.CompletedResults.Add(SlotStatus.Crashed);
-        }
     }
 
     public void WorkerActivity(int workerIndex)
@@ -304,29 +253,14 @@ public class LiveDisplay
         var barWidth = ContentWidth - 7; // Leave room for " 100 %"
         var percentage = Math.Min(1.0, (double)completed / total);
 
-        // Collect all results in order across all workers
+        // Synthesize results from counts for heat map
         var allResults = new List<SlotStatus>();
-        if (_workerCount > 1 && _workerStates.Count > 0)
-        {
-            foreach (var (_, state) in _workerStates.OrderBy(kv => kv.Key))
-            {
-                // Pad with pending for incomplete tests in this worker's batch
-                var workerResults = new List<SlotStatus>(state.CompletedResults);
-                while (workerResults.Count < state.BatchSize)
-                    workerResults.Add(SlotStatus.Pending);
-                allResults.AddRange(workerResults);
-            }
-        }
-        else
-        {
-            // Single worker: synthesize from counts (not ideal but works)
-            allResults.AddRange(Enumerable.Repeat(SlotStatus.Passed, _passed));
-            allResults.AddRange(Enumerable.Repeat(SlotStatus.Failed, _failed));
-            allResults.AddRange(Enumerable.Repeat(SlotStatus.Hanging, _hanging));
-            allResults.AddRange(Enumerable.Repeat(SlotStatus.Crashed, _crashed));
-            while (allResults.Count < total)
-                allResults.Add(SlotStatus.Pending);
-        }
+        allResults.AddRange(Enumerable.Repeat(SlotStatus.Passed, _passed));
+        allResults.AddRange(Enumerable.Repeat(SlotStatus.Failed, _failed));
+        allResults.AddRange(Enumerable.Repeat(SlotStatus.Hanging, _hanging));
+        allResults.AddRange(Enumerable.Repeat(SlotStatus.Crashed, _crashed));
+        while (allResults.Count < total)
+            allResults.Add(SlotStatus.Pending);
 
         // Use gradient heat map with half-block characters (2 pixels per char)
         var bar = RenderGradientHeatMap(allResults, total, barWidth);
