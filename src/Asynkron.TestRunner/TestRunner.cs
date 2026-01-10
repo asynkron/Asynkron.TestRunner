@@ -184,7 +184,7 @@ public class TestRunner
         var pending = new HashSet<string>(batch);
         var running = new HashSet<string>();
         var attempts = 0;
-        const int maxAttempts = 100;
+        const int maxAttempts = 3; // Reduced from 100 to fail fast
 
         while (pending.Count > 0 && attempts < maxAttempts)
         {
@@ -292,6 +292,13 @@ public class TestRunner
                 worker.Kill();
                 break;
             }
+        }
+
+        // After all retries, mark any remaining tests as crashed
+        foreach (var fqn in pending)
+        {
+            lock (results) results.Crashed.Add(fqn);
+            display.TestCrashed(fqn);
         }
     }
 
