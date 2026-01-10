@@ -58,11 +58,8 @@ public class NUnitFramework : ITestFramework
                 // Create event handler
                 var handler = new TestEventHandler(channel.Writer, ct);
 
-                // Run tests
-                var resultXml = runner.Run(handler, filter);
-
-                // Parse any remaining results from XML
-                ParseResults(resultXml, channel.Writer);
+                // Run tests - results are streamed via TestEventHandler
+                runner.Run(handler, filter);
             }
             catch (Exception ex)
             {
@@ -221,7 +218,7 @@ public class NUnitFramework : ITestFramework
                         break;
 
                     case "test-case":
-                        // Final result - handled in ParseResults
+                        HandleTestCase(root);
                         break;
 
                     case "test-output":
@@ -235,6 +232,41 @@ public class NUnitFramework : ITestFramework
             catch
             {
                 // Ignore malformed events
+            }
+        }
+
+        private void HandleTestCase(XmlElement root)
+        {
+            var fullname = root.Attributes?["fullname"]?.Value ?? "";
+            var name = root.Attributes?["name"]?.Value ?? fullname;
+            var result = root.Attributes?["result"]?.Value ?? "";
+            var durationStr = root.Attributes?["duration"]?.Value ?? "0";
+
+            if (!double.TryParse(durationStr, System.Globalization.NumberStyles.Any,
+                System.Globalization.CultureInfo.InvariantCulture, out var durationSecs))
+                durationSecs = 0;
+
+            var duration = TimeSpan.FromSeconds(durationSecs);
+
+            switch (result.ToLowerInvariant())
+            {
+                case "passed":
+                    _writer.TryWrite(new TestPassed(fullname, name, duration));
+                    break;
+
+                case "failed":
+                    var failureNode = root.SelectSingleNode("failure");
+                    var message = failureNode?.SelectSingleNode("message")?.InnerText ?? "Test failed";
+                    var stackTrace = failureNode?.SelectSingleNode("stack-trace")?.InnerText;
+                    _writer.TryWrite(new TestFailed(fullname, name, duration, message, stackTrace));
+                    break;
+
+                case "skipped":
+                case "ignored":
+                    var reasonNode = root.SelectSingleNode("reason/message");
+                    var reason = reasonNode?.InnerText;
+                    _writer.TryWrite(new TestSkipped(fullname, name, reason));
+                    break;
             }
         }
     }
