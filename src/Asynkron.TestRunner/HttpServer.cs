@@ -168,6 +168,7 @@ public class HttpServer
                 var runner = new TestRunner(
                     _store,
                     req.Timeout ?? 30,
+                    hangTimeoutSeconds: null, // Use default (same as timeout)
                     req.Filter,
                     quiet: false, // Show UI!
                     req.Workers ?? 1,

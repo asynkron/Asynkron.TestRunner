@@ -90,6 +90,7 @@ static async Task<int> HandleRunAsync(string[] args)
     var assemblyPaths = ExtractAssemblyPaths(args);
     var filter = ParseFilter(args);
     var timeout = ParseTimeout(args);
+    var hangTimeout = ParseHangTimeout(args);
     var quiet = ParseQuiet(args);
     var workers = ParseWorkers(args) ?? 1;
     var verbose = ParseVerbose(args);
@@ -103,7 +104,7 @@ static async Task<int> HandleRunAsync(string[] args)
     }
 
     var store = new ResultStore();
-    var runner = new TestRunner(store, timeout, filter, quiet, workers, verbose, logFile);
+    var runner = new TestRunner(store, timeout, hangTimeout, filter, quiet, workers, verbose, logFile);
     return await runner.RunTestsAsync(assemblyPaths.ToArray());
 }
 
@@ -378,6 +379,21 @@ static int? ParseTimeout(string[] args)
     {
         if (args[i].Equals("--timeout", StringComparison.OrdinalIgnoreCase) ||
             args[i].Equals("-t", StringComparison.OrdinalIgnoreCase))
+        {
+            if (i + 1 < args.Length && int.TryParse(args[i + 1], out var seconds))
+            {
+                return seconds;
+            }
+        }
+    }
+    return null;
+}
+
+static int? ParseHangTimeout(string[] args)
+{
+    for (var i = 0; i < args.Length; i++)
+    {
+        if (args[i].Equals("--hang-timeout", StringComparison.OrdinalIgnoreCase))
         {
             if (i + 1 < args.Length && int.TryParse(args[i + 1], out var seconds))
             {

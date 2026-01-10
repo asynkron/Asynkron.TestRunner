@@ -35,6 +35,7 @@ public class TestRunner
 {
     private readonly ResultStore _store;
     private readonly int _testTimeoutSeconds;
+    private readonly int _hangTimeoutSeconds;
     private readonly string? _filter;
     private readonly bool _quiet;
     private readonly int _workerCount;
@@ -43,10 +44,11 @@ public class TestRunner
     private readonly object _logLock = new();
     private readonly Action<TestResultDetail>? _resultCallback;
 
-    public TestRunner(ResultStore store, int? timeoutSeconds = null, string? filter = null, bool quiet = false, int workerCount = 1, bool verbose = false, string? logFile = null, Action<TestResultDetail>? resultCallback = null)
+    public TestRunner(ResultStore store, int? timeoutSeconds = null, int? hangTimeoutSeconds = null, string? filter = null, bool quiet = false, int workerCount = 1, bool verbose = false, string? logFile = null, Action<TestResultDetail>? resultCallback = null)
     {
         _store = store;
         _testTimeoutSeconds = timeoutSeconds ?? 30;
+        _hangTimeoutSeconds = hangTimeoutSeconds ?? _testTimeoutSeconds; // Default to same as test timeout
         _filter = filter;
         _quiet = quiet;
         _workerCount = Math.Max(1, workerCount);
@@ -550,8 +552,8 @@ public class TestRunner
         {
             using var cts = new CancellationTokenSource();
 
-            await foreach (var msg in worker.RunAsync(assemblyPath, [testFqn], _testTimeoutSeconds, cts.Token)
-                .WithTimeout(TimeSpan.FromSeconds(_testTimeoutSeconds), cts))
+            await foreach (var msg in worker.RunAsync(assemblyPath, [testFqn], _hangTimeoutSeconds, cts.Token)
+                .WithTimeout(TimeSpan.FromSeconds(_hangTimeoutSeconds), cts))
             {
                 switch (msg)
                 {
@@ -639,7 +641,7 @@ public class TestRunner
             lock (results) results.Hanging.Add(testFqn);
             display.TestHanging(displayName ?? testFqn);
             Log(workerId, $"ISOLATION HANGING (confirmed): {testFqn}");
-            ReportCrashedOrHanging(testFqn, "hanging", testOutput, $"Test exceeded {_testTimeoutSeconds}s in isolation");
+            ReportCrashedOrHanging(testFqn, "hanging", testOutput, $"Test exceeded {_hangTimeoutSeconds}s in isolation");
             worker.Kill();
         }
         catch (WorkerCrashedException ex)
