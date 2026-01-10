@@ -78,20 +78,45 @@ public class TestFilter
     /// </summary>
     public bool Matches(string fullyQualifiedName, string displayName)
     {
-        // FQN format: Namespace.Class.Method
-        if (Namespace != null && !fullyQualifiedName.Contains(Namespace, StringComparison.OrdinalIgnoreCase))
+        // FQN format: Namespace.Class.Method or Namespace.Class.Method(args)
+        var (ns, className, methodName) = ParseFqn(fullyQualifiedName);
+
+        if (Namespace != null && !ns.Contains(Namespace, StringComparison.OrdinalIgnoreCase))
             return false;
 
-        if (Class != null && !fullyQualifiedName.Contains(Class, StringComparison.OrdinalIgnoreCase))
+        if (Class != null && !className.Contains(Class, StringComparison.OrdinalIgnoreCase))
             return false;
 
-        if (Method != null && !fullyQualifiedName.Contains(Method, StringComparison.OrdinalIgnoreCase))
+        if (Method != null && !methodName.Contains(Method, StringComparison.OrdinalIgnoreCase))
             return false;
 
         if (DisplayName != null && !displayName.Contains(DisplayName, StringComparison.OrdinalIgnoreCase))
             return false;
 
         return true;
+    }
+
+    private static (string Namespace, string ClassName, string MethodName) ParseFqn(string fqn)
+    {
+        // Remove args if present: "Namespace.Class.Method(args)" -> "Namespace.Class.Method"
+        var parenIndex = fqn.IndexOf('(');
+        var baseFqn = parenIndex >= 0 ? fqn[..parenIndex] : fqn;
+
+        var lastDot = baseFqn.LastIndexOf('.');
+        if (lastDot < 0)
+            return ("", "", baseFqn);
+
+        var methodName = baseFqn[(lastDot + 1)..];
+        var remainder = baseFqn[..lastDot];
+
+        var secondLastDot = remainder.LastIndexOf('.');
+        if (secondLastDot < 0)
+            return ("", remainder, methodName);
+
+        var className = remainder[(secondLastDot + 1)..];
+        var ns = remainder[..secondLastDot];
+
+        return (ns, className, methodName);
     }
 
     public bool IsEmpty => Namespace == null && Class == null && Method == null && DisplayName == null;
