@@ -24,6 +24,7 @@ public class LiveDisplay
     private int _hanging;
     private int _crashed;
     private readonly Dictionary<string, DateTime> _running = new();
+    private readonly HashSet<string> _stuckTests = new();
     private string? _lastCompleted;
     private string? _lastStatus;
     private string? _filter;
@@ -523,6 +524,41 @@ public class LiveDisplay
         lock (_lock)
         {
             return (_passed, _failed, _skipped, _hanging, _crashed);
+        }
+    }
+
+    /// <summary>
+    /// Gets tests that have been running longer than the timeout.
+    /// These should be considered stuck and killed.
+    /// </summary>
+    public List<string> GetStuckTests()
+    {
+        lock (_lock)
+        {
+            var now = DateTime.UtcNow;
+            var stuck = new List<string>();
+
+            foreach (var (test, startTime) in _running)
+            {
+                if ((now - startTime).TotalSeconds >= _timeoutSeconds)
+                {
+                    stuck.Add(test);
+                    _stuckTests.Add(test);
+                }
+            }
+
+            return stuck;
+        }
+    }
+
+    /// <summary>
+    /// Checks if a test was previously identified as stuck
+    /// </summary>
+    public bool WasStuck(string displayName)
+    {
+        lock (_lock)
+        {
+            return _stuckTests.Contains(Truncate(displayName, ContentWidth));
         }
     }
 }

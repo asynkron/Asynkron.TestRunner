@@ -296,6 +296,32 @@ public class TestRunner
                 {
                     display.WorkerActivity(workerIndex);
 
+                    // Check for per-test timeout (test running too long while others complete)
+                    var now = DateTime.UtcNow;
+                    var stuckTests = running
+                        .Where(fqn => testStartTimes.TryGetValue(fqn, out var start) &&
+                                      (now - start).TotalSeconds >= _testTimeoutSeconds * 2) // 2x timeout = definitely stuck
+                        .ToList();
+
+                    if (stuckTests.Count > 0)
+                    {
+                        Log(workerIndex, $"STUCK TESTS DETECTED: {stuckTests.Count} tests exceeded {_testTimeoutSeconds * 2}s");
+                        foreach (var fqn in stuckTests)
+                        {
+                            Log(workerIndex, $"HANGING (per-test timeout): {fqn}");
+                            running.Remove(fqn);
+                            pending.Remove(fqn);
+                            lock (results) results.Hanging.Add(fqn);
+                            display.TestHanging(fqn);
+                            display.WorkerTestHanging(workerIndex);
+                            ReportCrashedOrHanging(fqn, "hanging", testOutput, $"Test exceeded per-test timeout of {_testTimeoutSeconds * 2}s");
+                        }
+                        // Kill worker and restart with remaining tests
+                        worker.Kill();
+                        display.WorkerRestarting(workerIndex);
+                        break; // Exit the foreach to restart
+                    }
+
                     switch (msg)
                     {
                         case TestStartedEvent started:
