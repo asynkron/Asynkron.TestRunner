@@ -158,6 +158,15 @@ public class LiveDisplay
         lock (_lock) _running[Truncate(displayName, ContentWidth)] = DateTime.UtcNow;
     }
 
+    /// <summary>
+    /// Removes a test from the running list without marking any status.
+    /// Used when moving tests to isolated retry.
+    /// </summary>
+    public void TestRemoved(string displayName)
+    {
+        lock (_lock) _running.Remove(Truncate(displayName, ContentWidth));
+    }
+
     public void TestPassed(string displayName)
     {
         lock (_lock)

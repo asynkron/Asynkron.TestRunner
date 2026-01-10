@@ -256,6 +256,7 @@ public class TestRunner
         var suspectedCrashTests = new HashSet<string>(); // Tests that need isolated retry
         var testOutput = new Dictionary<string, StringBuilder>(); // Capture output per test
         var testStartTimes = new Dictionary<string, DateTime>();
+        var fqnToDisplayName = new Dictionary<string, string>(); // Map FQN to DisplayName for proper removal
 
         Log(workerIndex, $"Starting batch: {batch.Count} tests");
 
@@ -321,7 +322,8 @@ public class TestRunner
                             running.Remove(fqn);
                             pending.Remove(fqn);
                             lock (results) results.Hanging.Add(fqn);
-                            display.TestHanging(fqn);
+                            var displayName = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
+                            display.TestHanging(displayName);
                             display.WorkerTestHanging(workerIndex);
                             ReportCrashedOrHanging(fqn, "hanging", testOutput, $"Test exceeded per-test timeout of {_testTimeoutSeconds * 2}s");
                         }
@@ -333,6 +335,8 @@ public class TestRunner
                             running.Remove(fqn);
                             pending.Remove(fqn);
                             suspectedCrashTests.Add(fqn);
+                            var displayName = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
+                            display.TestRemoved(displayName);
                         }
 
                         // Kill worker and restart with remaining tests
@@ -346,6 +350,7 @@ public class TestRunner
                         case TestStartedEvent started:
                             running.Add(started.FullyQualifiedName);
                             testStartTimes[started.FullyQualifiedName] = DateTime.UtcNow;
+                            fqnToDisplayName[started.FullyQualifiedName] = started.DisplayName;
                             display.TestStarted(started.DisplayName);
                             break;
 
