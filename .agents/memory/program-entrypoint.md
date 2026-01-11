@@ -1,0 +1,2 @@
+# Program.cs Entry Point
+CLI entry point for [file://asynkron-testrunner.md](Asynkron.TestRunner) that parses arguments, sets up run options (filters, timeouts, workers, quiet/verbose), and invokes the main test runner flow.

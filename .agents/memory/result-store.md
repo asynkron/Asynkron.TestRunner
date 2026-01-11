@@ -1,0 +1,2 @@
+# ResultStore
+Persists test run history for [file://asynkron-testrunner.md](Asynkron.TestRunner). Saves run summaries under `.testrunner/`, supports recent run comparison to detect regressions and fixes.

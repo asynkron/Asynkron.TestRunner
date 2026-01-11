@@ -1,0 +1,2 @@
+# Worker Path Resolution
+`WorkerProcess.FindWorkerPath` locates `testrunner-worker.dll` either next to the coordinator assembly or in the dev build output under `src/Asynkron.TestRunner.Worker/bin/Debug/net10.0/`.

@@ -130,10 +130,11 @@ public class WorkerProcess : IAsyncDisposable
                 return discovered.Tests;
             }
 
-            if (msg is ErrorEvent error)
-            {
-                throw new Exception($"Worker error: {error.Message}");
-            }
+if (msg is ErrorEvent error)
+{
+    throw new InvalidOperationException($"Worker error: {error.Message}");
+}
+
         }
 
         return [];

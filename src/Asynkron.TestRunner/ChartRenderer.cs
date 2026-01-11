@@ -209,94 +209,11 @@ public static class ChartRenderer
     }
 
     /// <summary>
-    /// Renders an isolation summary showing discovered hanging tests.
-    /// </summary>
-    public static void RenderIsolationSummary(
-        List<string> isolatedHangingTests,
-        List<string> failedBatches,
-        int totalBatches,
-        int passedBatches,
-        TimeSpan totalDuration)
-    {
-        Console.WriteLine();
-        Console.WriteLine($"{Bold}Isolation Summary{Reset}");
-        Console.WriteLine(new string('═', 60));
-
-        Console.WriteLine($"  {Dim}Total Batches:{Reset}  {totalBatches}");
-        Console.WriteLine($"  {Green}Passed:{Reset}        {passedBatches}");
-        Console.WriteLine($"  {Red}Failed:{Reset}        {failedBatches.Count}");
-        Console.WriteLine($"  {Magenta}Hanging:{Reset}       {isolatedHangingTests.Count}");
-        Console.WriteLine($"  {Dim}Duration:{Reset}      {FormatDuration(totalDuration)}");
-
-        if (isolatedHangingTests.Count > 0)
-        {
-            Console.WriteLine();
-            Console.WriteLine($"{Magenta}{Bold}Isolated Hanging Tests ({isolatedHangingTests.Count}):{Reset}");
-            foreach (var test in isolatedHangingTests)
-            {
-                Console.WriteLine($"  {Magenta}⏱{Reset} {test}");
-            }
-        }
-
-        if (failedBatches.Count > 0)
-        {
-            Console.WriteLine();
-            Console.WriteLine($"{Red}{Bold}Failed Batches ({failedBatches.Count}):{Reset}");
-            foreach (var batch in failedBatches.Take(10))
-            {
-                Console.WriteLine($"  {Red}✗{Reset} {batch}");
-            }
-            if (failedBatches.Count > 10)
-            {
-                Console.WriteLine($"  {Dim}... and {failedBatches.Count - 10} more{Reset}");
-            }
-        }
-
-        if (isolatedHangingTests.Count == 0 && failedBatches.Count == 0)
-        {
-            Console.WriteLine();
-            Console.WriteLine($"{Green}{Bold}✓ All tests passed without hanging!{Reset}");
-        }
-
-        Console.WriteLine();
-    }
-
-    /// <summary>
-    /// Renders a progress indicator for recursive drilling.
-    /// </summary>
-    public static void RenderDrillProgress(int depth, string batchName, int testCount, string status)
-    {
-        var indent = new string(' ', depth * 2);
-        var statusColor = status switch
-        {
-            "drilling" => Yellow,
-            "passed" => Green,
-            "failed" => Red,
-            "hung" => Magenta,
-            "isolated" => Magenta,
-            _ => Dim
-        };
-
-        var statusIcon = status switch
-        {
-            "drilling" => "▶",
-            "passed" => "✓",
-            "failed" => "✗",
-            "hung" => "⏱",
-            "isolated" => "⏱",
-            _ => "?"
-        };
-
-        Console.WriteLine($"{indent}{statusColor}{statusIcon}{Reset} {batchName} ({testCount} tests)");
-    }
-
-    /// <summary>
     /// Writes a test results summary to a file.
     /// </summary>
     public static void ExportSummary(
         string filePath,
-        TestRunResult result,
-        List<string>? isolatedHangingTests = null)
+        TestRunResult result)
     {
         using var writer = new StreamWriter(filePath);
 
@@ -325,16 +242,6 @@ public static class ChartRenderer
             writer.WriteLine();
             writer.WriteLine($"Failed Tests ({result.FailedTests.Count}):");
             foreach (var test in result.FailedTests)
-            {
-                writer.WriteLine($"  - {test}");
-            }
-        }
-
-        if (isolatedHangingTests != null && isolatedHangingTests.Count > 0)
-        {
-            writer.WriteLine();
-            writer.WriteLine($"Isolated Hanging Tests ({isolatedHangingTests.Count}):");
-            foreach (var test in isolatedHangingTests)
             {
                 writer.WriteLine($"  - {test}");
             }

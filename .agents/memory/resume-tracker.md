@@ -1,0 +1,2 @@
+# ResumeTracker
+Append-only checkpoint tracker for [file://asynkron-testrunner.md](Asynkron.TestRunner). Reads and writes `.testrunner/resume.jsonl` to resume incomplete runs and seed results into new sessions.

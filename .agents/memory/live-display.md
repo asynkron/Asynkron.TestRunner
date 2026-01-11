@@ -1,0 +1,2 @@
+# LiveDisplay
+Spectre.Console-based live UI in [file://asynkron-testrunner.md](Asynkron.TestRunner). Renders progress, queue metrics, and worker activity during runs; updated by `TestRunner` as tests start/finish or are retried.

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Xml.Linq;
 using Asynkron.TestRunner.Models;
 
@@ -31,9 +32,9 @@ public static class TrxParser
                 return null;
             }
 
-            var passed = int.Parse(counters.Attribute("passed")?.Value ?? "0");
-            var failed = int.Parse(counters.Attribute("failed")?.Value ?? "0");
-            var skipped = int.Parse(counters.Attribute("notExecuted")?.Value ?? "0");
+var passed = int.Parse(counters.Attribute("passed")?.Value ?? "0", CultureInfo.InvariantCulture);
+var failed = int.Parse(counters.Attribute("failed")?.Value ?? "0", CultureInfo.InvariantCulture);
+var skipped = int.Parse(counters.Attribute("notExecuted")?.Value ?? "0", CultureInfo.InvariantCulture);
 
             // Extract individual test results
             var (passedTests, failedTests, timedOutTests) = ExtractTestNames(root);

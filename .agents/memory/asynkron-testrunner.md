@@ -1,0 +1,2 @@
+# Asynkron.TestRunner
+A .NET global tool that orchestrates worker processes to run tests with isolation, retries, and live reporting. Coordinator CLI runs in `src/Asynkron.TestRunner/`, workers in `src/Asynkron.TestRunner.Worker/`, and stdio protocol types live in `src/Asynkron.TestRunner.Protocol/`. Run history persists under `.testrunner/`.

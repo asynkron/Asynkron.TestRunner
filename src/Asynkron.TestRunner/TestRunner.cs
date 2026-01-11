@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using Asynkron.TestRunner.Models;
 using Asynkron.TestRunner.Protocol;
@@ -66,7 +67,7 @@ public class TestRunner
             return;
         }
 
-        var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
+        var timestamp = DateTime.Now.ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture);
         var line = $"[{timestamp}] Worker {workerIndex}: {message}";
 
         lock (_logLock)
@@ -857,13 +858,13 @@ public class TestRunner
             var builder = new StringBuilder();
             builder.AppendLine("# Test Runner Summary");
             builder.AppendLine();
-            builder.AppendLine($"- Timestamp: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
-            builder.AppendLine($"- Duration: {elapsed.TotalSeconds:F1}s");
-            builder.AppendLine($"- Passed: {results.Passed.Count}");
-            builder.AppendLine($"- Failed: {results.Failed.Count}");
-            builder.AppendLine($"- Skipped: {results.Skipped.Count}");
-            builder.AppendLine($"- Hanging: {results.Hanging.Count}");
-            builder.AppendLine($"- Crashed: {results.Crashed.Count}");
+            builder.AppendLine(CultureInfo.InvariantCulture, $"- Timestamp: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+            builder.AppendLine(CultureInfo.InvariantCulture, $"- Duration: {elapsed.TotalSeconds:F1}s");
+            builder.AppendLine(CultureInfo.InvariantCulture, $"- Passed: {results.Passed.Count}");
+            builder.AppendLine(CultureInfo.InvariantCulture, $"- Failed: {results.Failed.Count}");
+            builder.AppendLine(CultureInfo.InvariantCulture, $"- Skipped: {results.Skipped.Count}");
+            builder.AppendLine(CultureInfo.InvariantCulture, $"- Hanging: {results.Hanging.Count}");
+            builder.AppendLine(CultureInfo.InvariantCulture, $"- Crashed: {results.Crashed.Count}");
 
             AppendSection(builder, "Failed", results.Failed);
             AppendSection(builder, "Skipped", results.Skipped);
@@ -885,7 +886,7 @@ public class TestRunner
     {
         var list = items.OrderBy(item => item).ToList();
         builder.AppendLine();
-        builder.AppendLine($"## {title} ({list.Count})");
+        builder.AppendLine(CultureInfo.InvariantCulture, $"## {title} ({list.Count})");
         if (list.Count == 0)
         {
             builder.AppendLine();
@@ -895,7 +896,7 @@ public class TestRunner
 
         foreach (var item in list)
         {
-            builder.AppendLine($"- {item}");
+            builder.AppendLine(CultureInfo.InvariantCulture, $"- {item}");
         }
     }
 

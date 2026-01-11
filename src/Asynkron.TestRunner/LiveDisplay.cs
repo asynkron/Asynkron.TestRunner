@@ -2,6 +2,8 @@ using System.Diagnostics;
 using Spectre.Console;
 using Spectre.Console.Rendering;
 
+using System.Globalization;
+
 namespace Asynkron.TestRunner;
 
 /// <summary>
@@ -388,7 +390,7 @@ public class LiveDisplay
 
             // Use right half block: ▐
             // Background = left color, Foreground = right color
-            bar.Append($"[rgb({rightColor.R},{rightColor.G},{rightColor.B}) on rgb({leftColor.R},{leftColor.G},{leftColor.B})]▐[/]");
+            bar.Append(CultureInfo.InvariantCulture, $"[rgb({rightColor.R},{rightColor.G},{rightColor.B}) on rgb({leftColor.R},{leftColor.G},{leftColor.B})]▐[/]");
         }
 
         return bar.ToString();

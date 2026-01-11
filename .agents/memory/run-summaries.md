@@ -1,0 +1,2 @@
+# Run Summaries
+TestRunner writes `.testrunner/summary.md` with full lists of failed, skipped, hanging, crashed, regressions, and fixes for a run. Stored alongside structured history in `.testrunner/`.

@@ -1,0 +1,2 @@
+# CLI Flags
+`testrunner` supports subcommands: `run`, `list`, `tree`, `serve`, `mcp`, `stats`, `regressions`, `clear`, plus `-h/--help`. Common options: `-f/--filter`, `-t/--timeout`, `-w/--workers`, `-q/--quiet`, `-v/--verbose`, `--log <file>`, `--resume [file]`, `--hang-timeout`, `--port` (for serve/mcp), `-o/--output` (tree), `-n/--history` (stats). See `src/Asynkron.TestRunner/Program.cs` usage text.

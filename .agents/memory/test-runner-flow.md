@@ -1,0 +1,2 @@
+# TestRunner Flow
+Execution pipeline in [file://asynkron-testrunner.md](Asynkron.TestRunner): `RunTestsAsync` discovers tests, applies filters, then runs batches with recovery. Live mode uses a shared `WorkQueue`, parallel workers, and tiered batch sizes to isolate flaky/timeouts. Results are summarized and persisted via the result store in `.testrunner/`.

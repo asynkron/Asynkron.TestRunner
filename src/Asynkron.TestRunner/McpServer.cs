@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -258,7 +259,7 @@ public class McpServer
                 "cancel_run" => await CallCancelAsync(),
                 "get_test_result" => await CallGetResultAsync(args),
                 "list_tests" => await CallListAsync(args),
-                _ => throw new Exception($"Unknown tool: {toolName}")
+                _ => throw new NotSupportedException($"Unknown tool: {toolName}")
             };
 
             return new JsonObject
@@ -321,23 +322,23 @@ public class McpServer
 
         if (json?["error"] != null)
         {
-            throw new Exception(json["error"]!.GetValue<string>());
+            throw new InvalidOperationException(json["error"]!.GetValue<string>());
         }
 
         var count = json?["count"]?.GetValue<int>() ?? 0;
         var tests = json?["tests"]?.AsArray();
 
         var sb = new System.Text.StringBuilder();
-        sb.AppendLine($"Found {count} tests:");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"Found {count} tests:");
         if (tests != null)
         {
             foreach (var test in tests.Take(50))
             {
-                sb.AppendLine($"  - {test?["FullyQualifiedName"]?.GetValue<string>()}");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  - {test?["FullyQualifiedName"]?.GetValue<string>()}");
             }
             if (count > 50)
             {
-                sb.AppendLine($"  ... and {count - 50} more");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  ... and {count - 50} more");
             }
         }
 
@@ -362,7 +363,7 @@ public class McpServer
 
         if (json?["error"] != null)
         {
-            throw new Exception(json["error"]!.GetValue<string>());
+            throw new InvalidOperationException(json["error"]!.GetValue<string>());
         }
 
         var runId = json?["runId"]?.GetValue<string>();
@@ -383,11 +384,11 @@ public class McpServer
         }
 
         var sb = new System.Text.StringBuilder();
-        sb.AppendLine($"State: {state}");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"State: {state}");
 
         if (json?["assembly"] != null)
         {
-            sb.AppendLine($"Assembly: {json["assembly"]!.GetValue<string>()}");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"Assembly: {json["assembly"]!.GetValue<string>()}");
         }
 
         var passed = json?["passed"]?.GetValue<int>() ?? 0;
@@ -399,26 +400,26 @@ public class McpServer
 
         if (state == "running")
         {
-            sb.AppendLine($"Progress: {total} tests completed");
-            sb.AppendLine($"  ✓ Passed: {passed}");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"Progress: {total} tests completed");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"  ✓ Passed: {passed}");
             if (failed > 0)
             {
-                sb.AppendLine($"  ✗ Failed: {failed}");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  ✗ Failed: {failed}");
             }
 
             if (crashed > 0)
             {
-                sb.AppendLine($"  💥 Crashed: {crashed}");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  💥 Crashed: {crashed}");
             }
 
             if (hanging > 0)
             {
-                sb.AppendLine($"  ⏱ Hanging: {hanging}");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  ⏱ Hanging: {hanging}");
             }
 
             if (skipped > 0)
             {
-                sb.AppendLine($"  ⊘ Skipped: {skipped}");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  ⊘ Skipped: {skipped}");
             }
 
             sb.AppendLine();
@@ -427,12 +428,12 @@ public class McpServer
         else if (state == "passed" || state == "failed")
         {
             sb.AppendLine();
-            sb.AppendLine($"Summary ({total} tests):");
-            sb.AppendLine($"  ✓ Passed:  {passed}");
-            sb.AppendLine($"  ✗ Failed:  {failed}");
-            sb.AppendLine($"  💥 Crashed: {crashed}");
-            sb.AppendLine($"  ⏱ Hanging: {hanging}");
-            sb.AppendLine($"  ⊘ Skipped: {skipped}");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"Summary ({total} tests):");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"  ✓ Passed:  {passed}");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"  ✗ Failed:  {failed}");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"  💥 Crashed: {crashed}");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"  ⏱ Hanging: {hanging}");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"  ⊘ Skipped: {skipped}");
 
             // Show problematic tests
             void ShowTests(string label, string icon, JsonArray? tests)
@@ -440,14 +441,14 @@ public class McpServer
                 if (tests != null && tests.Count > 0)
                 {
                     sb.AppendLine();
-                    sb.AppendLine($"{label}:");
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"{label}:");
                     foreach (var test in tests.Take(10))
                     {
-                        sb.AppendLine($"  {icon} {test?.GetValue<string>()}");
+                        sb.AppendLine(CultureInfo.InvariantCulture, $"  {icon} {test?.GetValue<string>()}");
                     }
                     if (tests.Count > 10)
                     {
-                        sb.AppendLine($"  ... and {tests.Count - 10} more");
+                        sb.AppendLine(CultureInfo.InvariantCulture, $"  ... and {tests.Count - 10} more");
                     }
                 }
             }
@@ -461,7 +462,7 @@ public class McpServer
         }
         else if (state == "error")
         {
-            sb.AppendLine($"Error: {json?["error"]?.GetValue<string>()}");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"Error: {json?["error"]?.GetValue<string>()}");
         }
 
         return sb.ToString();
@@ -479,7 +480,7 @@ public class McpServer
         var pattern = args?["pattern"]?.GetValue<string>();
         if (string.IsNullOrWhiteSpace(pattern))
         {
-            throw new Exception("Pattern is required");
+            throw new ArgumentException("Pattern is required", nameof(args));
         }
 
         var response = await _http.GetAsync($"/result?pattern={Uri.EscapeDataString(pattern)}");
@@ -496,7 +497,7 @@ public class McpServer
         var results = json?["results"]?.AsArray();
 
         var sb = new System.Text.StringBuilder();
-        sb.AppendLine($"Found {count} test(s) matching '{pattern}':");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"Found {count} test(s) matching '{pattern}':");
         sb.AppendLine();
 
         if (results != null)
@@ -511,18 +512,18 @@ public class McpServer
                 var output = test?["output"]?.GetValue<string>();
                 var skipReason = test?["skipReason"]?.GetValue<string>();
 
-                sb.AppendLine($"=== {fqn} ===");
-                sb.AppendLine($"Status: {status}");
-                sb.AppendLine($"Duration: {durationMs:F1}ms");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"=== {fqn} ===");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"Status: {status}");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"Duration: {durationMs:F1}ms");
 
                 if (!string.IsNullOrEmpty(skipReason))
                 {
-                    sb.AppendLine($"Skip reason: {skipReason}");
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"Skip reason: {skipReason}");
                 }
 
                 if (!string.IsNullOrEmpty(errorMessage))
                 {
-                    sb.AppendLine($"Error: {errorMessage}");
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"Error: {errorMessage}");
                 }
 
                 if (!string.IsNullOrEmpty(stackTrace))
@@ -564,15 +565,15 @@ public class McpServer
         var tests = json?["tests"]?.AsArray();
 
         var sb = new System.Text.StringBuilder();
-        sb.AppendLine($"Found {count} tests (of {totalTests} total)");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"Found {count} tests (of {totalTests} total)");
         if (status != "all")
         {
-            sb.AppendLine($"Filter: status={status}");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"Filter: status={status}");
         }
 
         if (!string.IsNullOrWhiteSpace(pattern))
         {
-            sb.AppendLine($"Filter: pattern={pattern}");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"Filter: pattern={pattern}");
         }
 
         sb.AppendLine();
@@ -603,7 +604,7 @@ public class McpServer
                     "skipped" => "⊘",
                     _ => "?"
                 };
-                sb.AppendLine($"[{group.Key.ToUpperInvariant()}] ({group.Count()})");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"[{group.Key.ToUpperInvariant()}] ({group.Count()})");
                 foreach (var test in group.Take(50))
                 {
                     var name = test?["name"]?.GetValue<string>() ?? "?";
@@ -621,11 +622,11 @@ public class McpServer
                     }
 
                     var suffix = annotations.Count > 0 ? $" ({string.Join(", ", annotations)})" : "";
-                    sb.AppendLine($"  {icon} {name}{suffix}");
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"  {icon} {name}{suffix}");
                 }
                 if (group.Count() > 50)
                 {
-                    sb.AppendLine($"  ... and {group.Count() - 50} more");
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"  ... and {group.Count() - 50} more");
                 }
 
                 sb.AppendLine();

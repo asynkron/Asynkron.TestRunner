@@ -1,0 +1,2 @@
+# WorkerProcess
+Coordinator-side process wrapper in [file://asynkron-testrunner.md](Asynkron.TestRunner). Spawns `dotnet testrunner-worker.dll`, writes protocol commands to stdin, and streams JSONL events from stdout. Provides `DiscoverAsync` and `RunAsync` and enforces crash detection and cleanup.

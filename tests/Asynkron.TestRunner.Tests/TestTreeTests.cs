@@ -51,30 +51,6 @@ public class TestTreeTests
     }
 
     [Fact]
-    public void AddTests_TestsWithUnderscoreSeparators_SplitsCorrectly()
-    {
-        var tree = new TestTree();
-        tree.AddTests([
-            "Namespace_Class_Method_WhenCondition_ShouldResult"
-        ]);
-
-        // Name separators include '.', '_', ','
-        Assert.Equal(1, tree.Root.TotalTestCount);
-
-        // Should split on underscores as well
-        var node = tree.Root;
-        var depth = 0;
-        while (node.Children.Count > 0)
-        {
-            node = node.Children[0];
-            depth++;
-        }
-
-        // Should have multiple levels from splitting on underscores
-        Assert.True(depth >= 3, $"Expected at least 3 levels, got {depth}");
-    }
-
-    [Fact]
     public void GetNodesAtDepth_ReturnsCorrectNodes()
     {
         var tree = new TestTree();
@@ -228,19 +204,6 @@ public class TestTreeTests
 
         Assert.NotNull(node);
         Assert.Equal("Class", node.Name);
-    }
-
-    [Fact]
-    public void FindNodeByPath_WorksWithUnderscoreSeparators()
-    {
-        var tree = new TestTree();
-        tree.AddTests(["Namespace.Class.Method_WhenCondition_ThenResult.Test1"]);
-
-        // Should be able to navigate using underscore path as well
-        var node = tree.FindNodeByPath("Namespace.Class.Method");
-
-        Assert.NotNull(node);
-        Assert.Equal("Method", node.Name);
     }
 
     [Fact]

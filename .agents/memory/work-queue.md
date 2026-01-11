@@ -1,0 +1,2 @@
+# WorkQueue
+Thread-safe queue manager used by [file://test-runner-flow.md](TestRunner Flow) to distribute tests across workers. Tracks `pending`, `suspicious`, and `confirmed` queues plus per-worker assignments; suspicious tests are promoted in tiers and confirmed tests run only in isolation (batch size 1).

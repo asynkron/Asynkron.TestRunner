@@ -1,0 +1,2 @@
+# Stdio Protocol
+JSON Lines protocol between coordinator and worker in [file://asynkron-testrunner.md](Asynkron.TestRunner). Commands: `discover`, `run`, `cancel`. Events: `discovered`, `started`, `passed`, `failed`, `skipped`, `output`, `completed`, `error`. Serialized in `src/Asynkron.TestRunner.Protocol`.

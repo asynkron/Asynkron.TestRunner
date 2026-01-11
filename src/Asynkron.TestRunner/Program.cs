@@ -49,12 +49,6 @@ static async Task<int> RunAsync(string[] args)
         return await HandleTreeAsync(args);
     }
 
-    // Handle "isolate" subcommand
-    if (args.Length > 0 && args[0].Equals("isolate", StringComparison.OrdinalIgnoreCase))
-    {
-        return await HandleIsolateAsync(args);
-    }
-
     // Handle "serve" subcommand - HTTP server with UI
     if (args.Length > 0 && args[0].Equals("serve", StringComparison.OrdinalIgnoreCase))
     {
@@ -109,28 +103,54 @@ static async Task<int> HandleRunAsync(string[] args)
     return await runner.RunTestsAsync(assemblyPaths.ToArray());
 }
 
-static bool ParseVerbose(string[] args)
+static bool HasOption(string[] args, params string[] options)
 {
-    return args.Any(a =>
-        a.Equals("--verbose", StringComparison.OrdinalIgnoreCase) ||
-        a.Equals("-v", StringComparison.OrdinalIgnoreCase));
+    return args.Any(arg => options.Any(option => arg.Equals(option, StringComparison.OrdinalIgnoreCase)));
 }
 
-static string? ParseLogFile(string[] args)
+static string? GetOptionValue(string[] args, params string[] options)
 {
     for (var i = 0; i < args.Length; i++)
     {
-        if (args[i].Equals("--log", StringComparison.OrdinalIgnoreCase))
+        if (options.Any(option => args[i].Equals(option, StringComparison.OrdinalIgnoreCase)))
         {
             if (i + 1 < args.Length)
             {
                 return args[i + 1];
             }
-            // No argument provided, use default
-            return "testrunner.log";
+
+            return null;
         }
     }
+
     return null;
+}
+
+static int? GetOptionInt(string[] args, params string[] options)
+{
+    var value = GetOptionValue(args, options);
+    if (value != null && int.TryParse(value, out var parsed))
+    {
+        return parsed;
+    }
+
+    return null;
+}
+
+static bool ParseVerbose(string[] args)
+{
+    return HasOption(args, "--verbose", "-v");
+}
+
+static string? ParseLogFile(string[] args)
+{
+    if (!HasOption(args, "--log"))
+    {
+        return null;
+    }
+
+    var value = GetOptionValue(args, "--log");
+    return string.IsNullOrWhiteSpace(value) ? "testrunner.log" : value;
 }
 
 static bool ParseResume(string[] args, out string? resumeFile)
@@ -188,34 +208,18 @@ static async Task<int> HandleMcpAsync(string[] args)
 
 static int? ParsePort(string[] args)
 {
-    for (var i = 0; i < args.Length; i++)
-    {
-        if (args[i].Equals("--port", StringComparison.OrdinalIgnoreCase))
-        {
-            if (i + 1 < args.Length && int.TryParse(args[i + 1], out var port))
-            {
-                return port;
-            }
-        }
-    }
-    return null;
+    return GetOptionInt(args, "--port");
 }
 
 static int? ParseWorkers(string[] args)
 {
-    for (var i = 0; i < args.Length; i++)
+    var value = GetOptionValue(args, "--workers", "-w");
+    if (value != null && int.TryParse(value, out var workers))
     {
-        if (args[i].Equals("--workers", StringComparison.OrdinalIgnoreCase) ||
-            args[i].Equals("-w", StringComparison.OrdinalIgnoreCase))
-        {
-            if (i + 1 < args.Length && int.TryParse(args[i + 1], out var workers))
-            {
-                return Math.Max(1, workers);
-            }
-            return Environment.ProcessorCount;
-        }
+        return Math.Max(1, workers);
     }
-    return null;
+
+    return HasOption(args, "--workers", "-w") ? Environment.ProcessorCount : null;
 }
 
 static async Task<int> HandleListAsync(string[] args)
@@ -348,36 +352,7 @@ static async Task<int> HandleTreeAsync(string[] args)
 
 static string? ParseOutput(string[] args)
 {
-    for (var i = 0; i < args.Length; i++)
-    {
-        if (args[i].Equals("--output", StringComparison.OrdinalIgnoreCase) ||
-            args[i].Equals("-o", StringComparison.OrdinalIgnoreCase))
-        {
-            if (i + 1 < args.Length)
-            {
-                return args[i + 1];
-            }
-        }
-    }
-    return null;
-}
-
-static async Task<int> HandleIsolateAsync(string[] args)
-{
-    var assemblyPaths = ExtractAssemblyPaths(args);
-    var filter = ParseFilter(args);
-    var timeout = ParseTimeout(args) ?? 30;
-    var parallel = ParseParallel(args) ?? 1;
-
-    if (assemblyPaths.Count == 0)
-    {
-        Console.WriteLine("Error: No test assembly paths provided.");
-        Console.WriteLine("Usage: testrunner isolate <assembly.dll> [--filter pattern] [--timeout N] [--parallel N]");
-        return 1;
-    }
-
-    var isolateRunner = new IsolateRunner(assemblyPaths.ToArray(), timeout, filter, parallel);
-    return await isolateRunner.RunAsync(filter);
+    return GetOptionValue(args, "--output", "-o");
 }
 
 static List<string> ExtractAssemblyPaths(string[] args)
@@ -401,90 +376,27 @@ static string ExpandPath(string path)
 
 static int? ParseTimeout(string[] args)
 {
-    for (var i = 0; i < args.Length; i++)
-    {
-        if (args[i].Equals("--timeout", StringComparison.OrdinalIgnoreCase) ||
-            args[i].Equals("-t", StringComparison.OrdinalIgnoreCase))
-        {
-            if (i + 1 < args.Length && int.TryParse(args[i + 1], out var seconds))
-            {
-                return seconds;
-            }
-        }
-    }
-    return null;
+    return GetOptionInt(args, "--timeout", "-t");
 }
 
 static int? ParseHangTimeout(string[] args)
 {
-    for (var i = 0; i < args.Length; i++)
-    {
-        if (args[i].Equals("--hang-timeout", StringComparison.OrdinalIgnoreCase))
-        {
-            if (i + 1 < args.Length && int.TryParse(args[i + 1], out var seconds))
-            {
-                return seconds;
-            }
-        }
-    }
-    return null;
-}
-
-static int? ParseParallel(string[] args)
-{
-    for (var i = 0; i < args.Length; i++)
-    {
-        if (args[i].Equals("--parallel", StringComparison.OrdinalIgnoreCase) ||
-            args[i].Equals("-p", StringComparison.OrdinalIgnoreCase))
-        {
-            if (i + 1 < args.Length && int.TryParse(args[i + 1], out var parallel))
-            {
-                return Math.Max(1, parallel);
-            }
-            return Environment.ProcessorCount;
-        }
-    }
-    return null;
+    return GetOptionInt(args, "--hang-timeout");
 }
 
 static bool ParseQuiet(string[] args)
 {
-    return args.Any(a =>
-        a.Equals("--quiet", StringComparison.OrdinalIgnoreCase) ||
-        a.Equals("-q", StringComparison.OrdinalIgnoreCase));
+    return HasOption(args, "--quiet", "-q");
 }
 
 static string? ParseFilter(string[] args)
 {
-    for (var i = 0; i < args.Length; i++)
-    {
-        if (args[i].Equals("--filter", StringComparison.OrdinalIgnoreCase) ||
-            args[i].Equals("-f", StringComparison.OrdinalIgnoreCase))
-        {
-            if (i + 1 < args.Length)
-            {
-                return args[i + 1];
-            }
-        }
-    }
-    return null;
+    return GetOptionValue(args, "--filter", "-f");
 }
 
 static int HandleStats(string[] args, ResultStore store)
 {
-    var historyCount = 10;
-
-    for (var i = 1; i < args.Length; i++)
-    {
-        if (args[i].Equals("--history", StringComparison.OrdinalIgnoreCase) ||
-            args[i].Equals("-n", StringComparison.OrdinalIgnoreCase))
-        {
-            if (i + 1 < args.Length && int.TryParse(args[i + 1], out var count))
-            {
-                historyCount = count;
-            }
-        }
-    }
+    var historyCount = GetOptionInt(args, "--history", "-n") ?? 10;
 
     var results = store.GetRecentRuns(historyCount);
     ChartRenderer.RenderHistory(results);
@@ -540,7 +452,6 @@ static void PrintUsage()
         Usage:
           testrunner run <assembly.dll> [options]        Run tests in assembly
           testrunner list <assembly.dll> [options]       List tests without running
-          testrunner isolate <assembly.dll> [options]    Find hanging tests
           testrunner serve [--port N]                    Start HTTP server with UI (for MCP)
           testrunner mcp [--port N]                      Start MCP server (connects to serve)
           testrunner stats                               Show test history
@@ -549,9 +460,8 @@ static void PrintUsage()
 
         Options:
           -f, --filter <pattern>       Filter tests by pattern (Class=Foo, Method=Bar)
-          -t, --timeout <seconds>      Per-test timeout (default: 20s for run, 30s for isolate)
+          -t, --timeout <seconds>      Per-test timeout (default: 30s)
           -w, --workers [N]            Run N worker processes in parallel (default: 1)
-          -p, --parallel [N]           Run N batches in parallel (default: 1, or CPU count)
           -q, --quiet                  Suppress verbose output
           -v, --verbose                Show diagnostic logs on stderr
           --log <file>                 Write diagnostic logs to file
@@ -562,7 +472,6 @@ static void PrintUsage()
           testrunner run ./bin/Release/net8.0/MyTests.dll
           testrunner run MyTests.dll --filter "Class=UserTests"
           testrunner list MyTests.dll --filter "Method=Should"
-          testrunner isolate MyTests.dll --timeout 60 --parallel 4
 
         Native Runner:
           This runner executes xUnit and NUnit tests directly without vstest.
