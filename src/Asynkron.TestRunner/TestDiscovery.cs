@@ -12,6 +12,7 @@ public class TestFilter
     public string? Class { get; set; }
     public string? Method { get; set; }
     public string? DisplayName { get; set; }
+    public string? FullFqnContains { get; set; }
 
     public static TestFilter Parse(string? filterString)
     {
@@ -46,13 +47,14 @@ public class TestFilter
                     filter.DisplayName = value;
                     break;
                 default:
-                    filter.Class = filterString;
+                    filter.FullFqnContains = filterString;
                     break;
             }
         }
         else
         {
-            filter.Class = filterString;
+            // Simple string without '=' - match against full FQN
+            filter.FullFqnContains = filterString;
         }
 
         return filter;
@@ -60,6 +62,12 @@ public class TestFilter
 
     public bool Matches(DiscoveredTest test)
     {
+        // If simple FQN contains filter is set, just check the full FQN
+        if (FullFqnContains != null)
+        {
+            return test.FullyQualifiedName.Contains(FullFqnContains, StringComparison.OrdinalIgnoreCase);
+        }
+
         if (Namespace != null && !test.Namespace.Contains(Namespace, StringComparison.OrdinalIgnoreCase))
         {
             return false;
@@ -88,6 +96,12 @@ public class TestFilter
     /// </summary>
     public bool Matches(string fullyQualifiedName, string displayName)
     {
+        // If simple FQN contains filter is set, just check the full FQN
+        if (FullFqnContains != null)
+        {
+            return fullyQualifiedName.Contains(FullFqnContains, StringComparison.OrdinalIgnoreCase);
+        }
+
         // FQN format: Namespace.Class.Method or Namespace.Class.Method(args)
         var (ns, className, methodName) = ParseFqn(fullyQualifiedName);
 

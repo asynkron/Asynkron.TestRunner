@@ -86,6 +86,7 @@ static async Task<int> HandleRunAsync(string[] args)
     var timeout = ParseTimeout(args);
     var hangTimeout = ParseHangTimeout(args);
     var quiet = ParseQuiet(args);
+    var streamingConsole = ParseConsole(args);
     var workers = ParseWorkers(args) ?? 1;
     var verbose = ParseVerbose(args);
     var logFile = ParseLogFile(args);
@@ -99,7 +100,7 @@ static async Task<int> HandleRunAsync(string[] args)
     }
 
     var store = new ResultStore();
-    var runner = new TestRunner(store, timeout, hangTimeout, filter, quiet, workers, verbose, logFile, resumeEnabled ? resumeFile : null);
+    var runner = new TestRunner(store, timeout, hangTimeout, filter, quiet, streamingConsole, workers, verbose, logFile, resumeEnabled ? resumeFile : null);
     return await runner.RunTestsAsync(assemblyPaths.ToArray());
 }
 
@@ -389,6 +390,11 @@ static bool ParseQuiet(string[] args)
     return HasOption(args, "--quiet", "-q");
 }
 
+static bool ParseConsole(string[] args)
+{
+    return HasOption(args, "--console", "-c");
+}
+
 static string? ParseFilter(string[] args)
 {
     return GetOptionValue(args, "--filter", "-f");
@@ -463,6 +469,7 @@ static void PrintUsage()
           -t, --timeout <seconds>      Per-test timeout (default: 30s)
           -w, --workers [N]            Run N worker processes in parallel (default: 1)
           -q, --quiet                  Suppress verbose output
+          -c, --console                Streaming console mode (no interactive UI)
           -v, --verbose                Show diagnostic logs on stderr
           --log <file>                 Write diagnostic logs to file
           --resume [file]              Resume from checkpoint (default: .testrunner/resume.jsonl)

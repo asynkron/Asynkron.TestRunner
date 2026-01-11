@@ -81,16 +81,25 @@ public class XUnitFramework : ITestFramework
                 discoverySink.Finished.WaitOne();
 
                 // Filter tests if specified
-                var testCases = discoverySink.TestCases.AsEnumerable();
+                List<ITestCase> testCasesList;
                 if (testFqns != null)
                 {
                     var fqnSet = new HashSet<string>(testFqns, StringComparer.OrdinalIgnoreCase);
-                    testCases = testCases.Where(tc =>
-                        fqnSet.Contains(tc.TestMethod.TestClass.Class.Name + "." + tc.TestMethod.Method.Name) ||
-                        fqnSet.Contains(tc.TestMethod.TestClass.Class.Name.Split('.').Last() + "." + tc.TestMethod.Method.Name));
+                    testCasesList = new List<ITestCase>();
+                    foreach (var tc in discoverySink.TestCases)
+                    {
+                        var fullFqn = tc.TestMethod.TestClass.Class.Name + "." + tc.TestMethod.Method.Name;
+                        var shortFqn = tc.TestMethod.TestClass.Class.Name.Split('.').Last() + "." + tc.TestMethod.Method.Name;
+                        if (fqnSet.Contains(fullFqn) || fqnSet.Contains(shortFqn))
+                        {
+                            testCasesList.Add(tc);
+                        }
+                    }
                 }
-
-                var testCasesList = testCases.ToList();
+                else
+                {
+                    testCasesList = new List<ITestCase>(discoverySink.TestCases);
+                }
                 if (testCasesList.Count == 0)
                 {
                     channel.Writer.Complete();
@@ -99,10 +108,17 @@ public class XUnitFramework : ITestFramework
 
                 // Run tests
                 var executionOptions = TestFrameworkOptions.ForExecution();
-                var executionSink = new ExecutionSink(channel.Writer, ct);
+                var executionSink = new ExecutionSink(channel.Writer, ct, testCasesList);
 
                 controller.RunTests(testCasesList, executionSink, executionOptions);
-                executionSink.Finished.WaitOne();
+
+                // Wait for completion with timeout (10 minutes max to handle slow tests + overhead)
+                var waitHandle = WaitHandle.WaitAny(new[] { executionSink.Finished, ct.WaitHandle }, TimeSpan.FromMinutes(10));
+                if (waitHandle == WaitHandle.WaitTimeout)
+                {
+                    channel.Writer.TryWrite(new TestFailed("", "xUnit Timeout", TimeSpan.Zero,
+                        "xUnit test execution did not complete within 10 minutes", ""));
+                }
             }
             catch (Exception ex)
             {
@@ -160,13 +176,16 @@ public class XUnitFramework : ITestFramework
     {
         private readonly ChannelWriter<TestResult> _writer;
         private readonly CancellationToken _ct;
+        private readonly HashSet<string> _expectedTests;
+        private readonly HashSet<string> _finishedTests = new();
 
         public ManualResetEvent Finished { get; } = new(false);
 
-        public ExecutionSink(ChannelWriter<TestResult> writer, CancellationToken ct)
+        public ExecutionSink(ChannelWriter<TestResult> writer, CancellationToken ct, IEnumerable<ITestCase> testCases)
         {
             _writer = writer;
             _ct = ct;
+            _expectedTests = testCases.Select(tc => $"{tc.TestMethod.TestClass.Class.Name}.{tc.TestMethod.Method.Name}").ToHashSet(StringComparer.OrdinalIgnoreCase);
         }
 
         public bool OnMessage(IMessageSinkMessage message)
@@ -190,6 +209,7 @@ public class XUnitFramework : ITestFramework
                         passFqn,
                         passed.Test.DisplayName,
                         TimeSpan.FromSeconds((double)passed.ExecutionTime)));
+                    CheckFinished(passFqn);
                     break;
 
                 case ITestFailed failed:
@@ -200,6 +220,7 @@ public class XUnitFramework : ITestFramework
                         TimeSpan.FromSeconds((double)failed.ExecutionTime),
                         string.Join(Environment.NewLine, failed.Messages),
                         string.Join(Environment.NewLine, failed.StackTraces)));
+                    CheckFinished(failFqn);
                     break;
 
                 case ITestSkipped skipped:
@@ -208,6 +229,7 @@ public class XUnitFramework : ITestFramework
                         skipFqn,
                         skipped.Test.DisplayName,
                         skipped.Reason));
+                    CheckFinished(skipFqn);
                     break;
 
                 case ITestOutput output:
@@ -221,6 +243,21 @@ public class XUnitFramework : ITestFramework
             }
 
             return true;
+        }
+
+        private void CheckFinished(string testFqn)
+        {
+            if (_expectedTests.Contains(testFqn))
+            {
+                lock (_finishedTests)
+                {
+                    _finishedTests.Add(testFqn);
+                    if (_finishedTests.Count >= _expectedTests.Count)
+                    {
+                        Finished.Set();
+                    }
+                }
+            }
         }
     }
 

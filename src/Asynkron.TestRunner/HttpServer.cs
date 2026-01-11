@@ -175,6 +175,7 @@ public class HttpServer
                     hangTimeoutSeconds: null, // Use default (same as timeout)
                     req.Filter,
                     quiet: false, // Show UI!
+                    streamingConsole: false,
                     req.Workers ?? 1,
                     resultCallback: result => _testResults[result.FullyQualifiedName] = result
                 );

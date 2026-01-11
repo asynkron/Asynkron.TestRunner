@@ -39,6 +39,7 @@ public class TestRunner
     private readonly int _hangTimeoutSeconds;
     private readonly string? _filter;
     private readonly bool _quiet;
+    private readonly bool _streamingConsole;
     private readonly int _workerCount;
     private readonly bool _verbose;
     private readonly string? _logFile;
@@ -46,13 +47,14 @@ public class TestRunner
     private readonly object _logLock = new();
     private readonly Action<TestResultDetail>? _resultCallback;
 
-    public TestRunner(ResultStore store, int? timeoutSeconds = null, int? hangTimeoutSeconds = null, string? filter = null, bool quiet = false, int workerCount = 1, bool verbose = false, string? logFile = null, string? resumeFilePath = null, Action<TestResultDetail>? resultCallback = null)
+    public TestRunner(ResultStore store, int? timeoutSeconds = null, int? hangTimeoutSeconds = null, string? filter = null, bool quiet = false, bool streamingConsole = false, int workerCount = 1, bool verbose = false, string? logFile = null, string? resumeFilePath = null, Action<TestResultDetail>? resultCallback = null)
     {
         _store = store;
         _testTimeoutSeconds = timeoutSeconds ?? 30;
         _hangTimeoutSeconds = hangTimeoutSeconds ?? _testTimeoutSeconds; // Default to same as test timeout
         _filter = filter;
         _quiet = quiet;
+        _streamingConsole = streamingConsole;
         _workerCount = Math.Max(1, workerCount);
         _verbose = verbose;
         _logFile = logFile;
@@ -199,7 +201,11 @@ public class TestRunner
             AnsiConsole.MarkupLine($"[dim]Found {allTests.Count} tests[/]");
 
             // Run with resilient recovery
-            if (_quiet)
+            if (_streamingConsole)
+            {
+                await RunWithRecoveryStreamingAsync(assemblyPath, allTests, results, ct);
+            }
+            else if (_quiet)
             {
                 await RunWithRecoveryQuietAsync(assemblyPath, allTests, results, ct);
             }
@@ -735,6 +741,116 @@ public class TestRunner
                     results.Crashed.Add(fqn);
                     MarkResume(resumeTracker, "crashed", fqn, fqn);
                     AnsiConsole.MarkupLine($"[red]  💥[/] {fqn} [red](CRASHED: {ex.ExitCode})[/]");
+                }
+            }
+            catch (Exception)
+            {
+                worker.Kill();
+                break;
+            }
+        }
+    }
+
+    private async Task RunWithRecoveryStreamingAsync(string assemblyPath, List<string> allTests, TestResults results, CancellationToken ct)
+    {
+        var resumeTracker = ResumeTracker.TryLoad(GetResumeFilePath(), assemblyPath, allTests);
+        if (resumeTracker != null)
+        {
+            SeedResultsFromResume(resumeTracker, results, null);
+        }
+
+        var pendingTests = resumeTracker?.FilterPending() ?? allTests;
+        var pending = new HashSet<string>(pendingTests);
+        var running = new HashSet<string>();
+        var attempts = 0;
+        const int maxAttempts = 100;
+
+        while (pending.Count > 0 && attempts < maxAttempts)
+        {
+            if (ct.IsCancellationRequested)
+            {
+                return;
+            }
+
+            attempts++;
+            running.Clear();
+
+            await using var worker = WorkerProcess.Spawn();
+
+            try
+            {
+                using var cts = new CancellationTokenSource();
+                var testsToRun = pending.ToList();
+
+                await foreach (var msg in worker.RunAsync(assemblyPath, testsToRun, _testTimeoutSeconds, cts.Token)
+                    .WithTimeout(TimeSpan.FromSeconds(_testTimeoutSeconds), cts))
+                {
+                    switch (msg)
+                    {
+                        case TestStartedEvent started:
+                            running.Add(started.FullyQualifiedName);
+                            break;
+
+                        case TestPassedEvent testPassed:
+                            running.Remove(testPassed.FullyQualifiedName);
+                            pending.Remove(testPassed.FullyQualifiedName);
+                            results.Passed.Add(testPassed.FullyQualifiedName);
+                            MarkResume(resumeTracker, "passed", testPassed.FullyQualifiedName, testPassed.DisplayName);
+                            Console.WriteLine($"\x1b[92m{"[PASSED]",-10}\x1b[0m {testPassed.DisplayName} ({testPassed.DurationMs:F0}ms)");
+                            break;
+
+                        case TestFailedEvent testFailed:
+                            running.Remove(testFailed.FullyQualifiedName);
+                            pending.Remove(testFailed.FullyQualifiedName);
+                            results.Failed.Add(testFailed.FullyQualifiedName);
+                            MarkResume(resumeTracker, "failed", testFailed.FullyQualifiedName, testFailed.DisplayName);
+                            Console.WriteLine($"\x1b[91m{"[FAILED]",-10}\x1b[0m {testFailed.DisplayName}");
+                            break;
+
+                        case TestSkippedEvent testSkipped:
+                            running.Remove(testSkipped.FullyQualifiedName);
+                            pending.Remove(testSkipped.FullyQualifiedName);
+                            results.Skipped.Add(testSkipped.FullyQualifiedName);
+                            MarkResume(resumeTracker, "skipped", testSkipped.FullyQualifiedName, testSkipped.DisplayName);
+                            Console.WriteLine($"\x1b[93m{"[SKIPPED]",-10}\x1b[0m {testSkipped.DisplayName}");
+                            break;
+
+                        case RunCompletedEvent:
+                            // Mark any still-running tests as crashed
+                            foreach (var fqn in running.ToList())
+                            {
+                                running.Remove(fqn);
+                                pending.Remove(fqn);
+                                results.Crashed.Add(fqn);
+                                MarkResume(resumeTracker, "crashed", fqn, fqn);
+                                Console.WriteLine($"\x1b[91m{"[CRASHED]",-10}\x1b[0m {fqn}");
+                            }
+                            break;
+
+                        case ErrorEvent:
+                            break;
+                    }
+                }
+            }
+            catch (TimeoutException)
+            {
+                foreach (var fqn in running)
+                {
+                    pending.Remove(fqn);
+                    results.Hanging.Add(fqn);
+                    MarkResume(resumeTracker, "hanging", fqn, fqn);
+                    Console.WriteLine($"\x1b[93m{"[HANGING]",-10}\x1b[0m {fqn}");
+                }
+                worker.Kill();
+            }
+            catch (WorkerCrashedException)
+            {
+                foreach (var fqn in running)
+                {
+                    pending.Remove(fqn);
+                    results.Crashed.Add(fqn);
+                    MarkResume(resumeTracker, "crashed", fqn, fqn);
+                    Console.WriteLine($"\x1b[91m{"[CRASHED]",-10}\x1b[0m {fqn}");
                 }
             }
             catch (Exception)
