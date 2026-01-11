@@ -41,10 +41,11 @@ public class TestRunner
     private readonly int _workerCount;
     private readonly bool _verbose;
     private readonly string? _logFile;
+    private readonly string? _resumeFilePath;
     private readonly object _logLock = new();
     private readonly Action<TestResultDetail>? _resultCallback;
 
-    public TestRunner(ResultStore store, int? timeoutSeconds = null, int? hangTimeoutSeconds = null, string? filter = null, bool quiet = false, int workerCount = 1, bool verbose = false, string? logFile = null, Action<TestResultDetail>? resultCallback = null)
+    public TestRunner(ResultStore store, int? timeoutSeconds = null, int? hangTimeoutSeconds = null, string? filter = null, bool quiet = false, int workerCount = 1, bool verbose = false, string? logFile = null, string? resumeFilePath = null, Action<TestResultDetail>? resultCallback = null)
     {
         _store = store;
         _testTimeoutSeconds = timeoutSeconds ?? 30;
@@ -54,6 +55,7 @@ public class TestRunner
         _workerCount = Math.Max(1, workerCount);
         _verbose = verbose;
         _logFile = logFile;
+        _resumeFilePath = resumeFilePath;
         _resultCallback = resultCallback;
     }
 
@@ -71,6 +73,52 @@ public class TestRunner
             if (_verbose)
                 Console.Error.WriteLine(line);
         }
+    }
+
+    private static void SeedResultsFromResume(ResumeTracker resumeTracker, TestResults results, LiveDisplay? display)
+    {
+        foreach (var entry in resumeTracker.CompletedEntries)
+        {
+            var displayName = entry.DisplayName ?? entry.Test;
+            switch (entry.Status)
+            {
+                case "passed":
+                    results.Passed.Add(entry.Test);
+                    display?.TestPassed(displayName);
+                    break;
+                case "failed":
+                    results.Failed.Add(entry.Test);
+                    display?.TestFailed(displayName);
+                    break;
+                case "skipped":
+                    results.Skipped.Add(entry.Test);
+                    display?.TestSkipped(displayName);
+                    break;
+                case "hanging":
+                    results.Hanging.Add(entry.Test);
+                    display?.TestHanging(displayName);
+                    break;
+                case "crashed":
+                    results.Crashed.Add(entry.Test);
+                    display?.TestCrashed(displayName);
+                    break;
+            }
+        }
+    }
+
+    private static void MarkResume(ResumeTracker? resumeTracker, string status, string testName, string? displayName)
+    {
+        resumeTracker?.MarkCompleted(testName, status, displayName);
+    }
+
+    private string? GetResumeFilePath()
+    {
+        if (_resumeFilePath == null)
+            return null;
+
+        return string.IsNullOrWhiteSpace(_resumeFilePath)
+            ? Path.Combine(_store.BaseFolder, "resume.jsonl")
+            : _resumeFilePath;
     }
 
     private void ReportCrashedOrHanging(string fqn, string status, Dictionary<string, StringBuilder>? testOutput = null, string? errorMessage = null)
@@ -155,18 +203,28 @@ public class TestRunner
     private async Task RunWithRecoveryLiveAsync(string assemblyPath, List<string> allTests, TestResults results, CancellationToken ct)
     {
         var display = new LiveDisplay();
-        display.SetTotal(allTests.Count);
         display.SetFilter(_filter);
         display.SetAssembly(assemblyPath);
         display.SetWorkerCount(_workerCount);
         display.SetTimeout(_testTimeoutSeconds);
 
+        var resumeTracker = ResumeTracker.TryLoad(GetResumeFilePath(), assemblyPath, allTests);
+        var totalTests = resumeTracker?.AllTests.Count ?? allTests.Count;
+        display.SetTotal(totalTests);
+
+        if (resumeTracker != null)
+        {
+            SeedResultsFromResume(resumeTracker, results, display);
+        }
+
+        var pendingTests = resumeTracker?.FilterPending() ?? allTests;
+
         var failureDetails = new List<(string Name, string Message, string? Stack)>();
         var failureLock = new object();
 
         // Shared work queue - workers pull from this
-        var queue = new WorkQueue(allTests);
-        var initialBatchSize = Math.Max(50, allTests.Count / _workerCount / 4);
+        var queue = new WorkQueue(pendingTests);
+        var initialBatchSize = Math.Max(50, pendingTests.Count / _workerCount / 4);
         var batchSizeHolder = new BatchSizeHolder(initialBatchSize);
         var tier = 1;
 
@@ -178,7 +236,7 @@ public class TestRunner
 
                 // Run all workers in parallel - they pull batches from shared queue
                 var workerTasks = Enumerable.Range(0, _workerCount)
-                    .Select(index => RunWorkerAsync(assemblyPath, index, queue, batchSizeHolder, results, display, failureDetails, failureLock, UpdateDisplay, ct))
+                    .Select(index => RunWorkerAsync(assemblyPath, index, queue, batchSizeHolder, results, display, resumeTracker, failureDetails, failureLock, UpdateDisplay, ct))
                     .ToList();
 
                 // Monitor loop: refresh display and handle tier promotion
@@ -252,6 +310,7 @@ public class TestRunner
         BatchSizeHolder batchSizeHolder,
         TestResults results,
         LiveDisplay display,
+        ResumeTracker? resumeTracker,
         List<(string Name, string Message, string? Stack)> failureDetails,
         object failureLock,
         Action updateDisplay,
@@ -326,6 +385,7 @@ public class TestRunner
                             lock (results) results.Hanging.Add(fqn);
                             var displayName = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
                             display.TestHanging(displayName);
+                            MarkResume(resumeTracker, "hanging", fqn, displayName);
                             ReportCrashedOrHanging(fqn, "hanging", testOutput, $"Test exceeded {_hangTimeoutSeconds * 2}s");
                         }
 
@@ -366,6 +426,7 @@ public class TestRunner
                             completedInBatch++;
                             lock (results) results.Passed.Add(testPassed.FullyQualifiedName);
                             display.TestPassed(testPassed.DisplayName);
+                            MarkResume(resumeTracker, "passed", testPassed.FullyQualifiedName, testPassed.DisplayName);
                             _resultCallback?.Invoke(new TestResultDetail(
                                 testPassed.FullyQualifiedName,
                                 testPassed.DisplayName,
@@ -382,6 +443,7 @@ public class TestRunner
                             completedInBatch++;
                             lock (results) results.Failed.Add(testFailed.FullyQualifiedName);
                             display.TestFailed(testFailed.DisplayName);
+                            MarkResume(resumeTracker, "failed", testFailed.FullyQualifiedName, testFailed.DisplayName);
                             lock (failureLock) failureDetails.Add((testFailed.DisplayName, testFailed.ErrorMessage, testFailed.StackTrace));
                             _resultCallback?.Invoke(new TestResultDetail(
                                 testFailed.FullyQualifiedName,
@@ -401,6 +463,7 @@ public class TestRunner
                             completedInBatch++;
                             lock (results) results.Skipped.Add(testSkipped.FullyQualifiedName);
                             display.TestSkipped(testSkipped.DisplayName);
+                            MarkResume(resumeTracker, "skipped", testSkipped.FullyQualifiedName, testSkipped.DisplayName);
                             _resultCallback?.Invoke(new TestResultDetail(
                                 testSkipped.FullyQualifiedName,
                                 testSkipped.DisplayName,
@@ -419,6 +482,7 @@ public class TestRunner
                                 lock (results) results.Crashed.Add(fqn);
                                 var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
                                 display.TestCrashed(dn);
+                                MarkResume(resumeTracker, "crashed", fqn, dn);
                                 ReportCrashedOrHanging(fqn, "crashed", testOutput, "Test did not report completion");
                             }
                             // Tests that never started - move to suspicious for retry
@@ -450,6 +514,7 @@ public class TestRunner
                             lock (results) results.Crashed.Add(fqn);
                             var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
                             display.TestCrashed(dn);
+                            MarkResume(resumeTracker, "crashed", fqn, dn);
                             ReportCrashedOrHanging(fqn, "crashed", testOutput, "Stream ended while test running");
                         }
                     }
@@ -524,7 +589,14 @@ public class TestRunner
 
     private async Task RunWithRecoveryQuietAsync(string assemblyPath, List<string> allTests, TestResults results, CancellationToken ct)
     {
-        var pending = new HashSet<string>(allTests);
+        var resumeTracker = ResumeTracker.TryLoad(GetResumeFilePath(), assemblyPath, allTests);
+        if (resumeTracker != null)
+        {
+            SeedResultsFromResume(resumeTracker, results, null);
+        }
+
+        var pendingTests = resumeTracker?.FilterPending() ?? allTests;
+        var pending = new HashSet<string>(pendingTests);
         var running = new HashSet<string>();
         var attempts = 0;
         const int maxAttempts = 100;
@@ -556,12 +628,14 @@ public class TestRunner
                             running.Remove(testPassed.FullyQualifiedName);
                             pending.Remove(testPassed.FullyQualifiedName);
                             results.Passed.Add(testPassed.FullyQualifiedName);
+                            MarkResume(resumeTracker, "passed", testPassed.FullyQualifiedName, testPassed.DisplayName);
                             break;
 
                         case TestFailedEvent testFailed:
                             running.Remove(testFailed.FullyQualifiedName);
                             pending.Remove(testFailed.FullyQualifiedName);
                             results.Failed.Add(testFailed.FullyQualifiedName);
+                            MarkResume(resumeTracker, "failed", testFailed.FullyQualifiedName, testFailed.DisplayName);
                             AnsiConsole.MarkupLine($"[red]  ✗[/] {EscapeMarkup(testFailed.DisplayName)}");
                             break;
 
@@ -569,6 +643,7 @@ public class TestRunner
                             running.Remove(testSkipped.FullyQualifiedName);
                             pending.Remove(testSkipped.FullyQualifiedName);
                             results.Skipped.Add(testSkipped.FullyQualifiedName);
+                            MarkResume(resumeTracker, "skipped", testSkipped.FullyQualifiedName, testSkipped.DisplayName);
                             break;
 
                         case RunCompletedEvent:
@@ -578,6 +653,7 @@ public class TestRunner
                                 running.Remove(fqn);
                                 pending.Remove(fqn);
                                 results.Crashed.Add(fqn);
+                                MarkResume(resumeTracker, "crashed", fqn, fqn);
                                 AnsiConsole.MarkupLine($"[red]  💥[/] {fqn} [red](NO RESULT)[/]");
                             }
                             break;
@@ -593,6 +669,7 @@ public class TestRunner
                 {
                     pending.Remove(fqn);
                     results.Hanging.Add(fqn);
+                    MarkResume(resumeTracker, "hanging", fqn, fqn);
                     AnsiConsole.MarkupLine($"[red]  ⏱[/] {fqn} [red](HANGING)[/]");
                 }
                 worker.Kill();
@@ -603,6 +680,7 @@ public class TestRunner
                 {
                     pending.Remove(fqn);
                     results.Crashed.Add(fqn);
+                    MarkResume(resumeTracker, "crashed", fqn, fqn);
                     AnsiConsole.MarkupLine($"[red]  💥[/] {fqn} [red](CRASHED: {ex.ExitCode})[/]");
                 }
             }

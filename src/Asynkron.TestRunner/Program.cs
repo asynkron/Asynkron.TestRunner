@@ -95,6 +95,7 @@ static async Task<int> HandleRunAsync(string[] args)
     var workers = ParseWorkers(args) ?? 1;
     var verbose = ParseVerbose(args);
     var logFile = ParseLogFile(args);
+    var resumeEnabled = ParseResume(args, out var resumeFile);
 
     if (assemblyPaths.Count == 0)
     {
@@ -104,7 +105,7 @@ static async Task<int> HandleRunAsync(string[] args)
     }
 
     var store = new ResultStore();
-    var runner = new TestRunner(store, timeout, hangTimeout, filter, quiet, workers, verbose, logFile);
+    var runner = new TestRunner(store, timeout, hangTimeout, filter, quiet, workers, verbose, logFile, resumeEnabled ? resumeFile : null);
     return await runner.RunTestsAsync(assemblyPaths.ToArray());
 }
 
@@ -128,6 +129,27 @@ static string? ParseLogFile(string[] args)
         }
     }
     return null;
+}
+
+static bool ParseResume(string[] args, out string? resumeFile)
+{
+    resumeFile = null;
+    for (var i = 0; i < args.Length; i++)
+    {
+        if (args[i].Equals("--resume", StringComparison.OrdinalIgnoreCase))
+        {
+            if (i + 1 < args.Length && !args[i + 1].StartsWith("-", StringComparison.Ordinal))
+            {
+                resumeFile = args[i + 1];
+            }
+            else
+            {
+                resumeFile = string.Empty;
+            }
+            return true;
+        }
+    }
+    return false;
 }
 
 static async Task<int> HandleServeAsync(string[] args)
@@ -529,6 +551,7 @@ static void PrintUsage()
           -q, --quiet                  Suppress verbose output
           -v, --verbose                Show diagnostic logs on stderr
           --log <file>                 Write diagnostic logs to file
+          --resume [file]              Resume from checkpoint (default: .testrunner/resume.jsonl)
           -h, --help                   Show this help
 
         Examples:
