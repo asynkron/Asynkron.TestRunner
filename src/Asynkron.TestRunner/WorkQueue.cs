@@ -2,13 +2,15 @@ namespace Asynkron.TestRunner;
 
 /// <summary>
 /// Thread-safe work queue for distributing tests to workers.
-/// Two-tier: pending → suspicious. When pending empty, promote suspicious and halve batch size.
+/// Three queues: pending → suspicious → confirmed (for true timeout culprits).
+/// Confirmed tests only run when batch size = 1 (isolation mode).
 /// </summary>
 public class WorkQueue
 {
     private readonly object _lock = new();
     private readonly Queue<string> _pending = new();
     private readonly Queue<string> _suspicious = new();
+    private readonly Queue<string> _confirmed = new(); // Tests that actually triggered timeouts
     private readonly Dictionary<int, HashSet<string>> _assigned = new();
 
     public WorkQueue(IEnumerable<string> tests)
@@ -18,7 +20,7 @@ public class WorkQueue
     }
 
     /// <summary>
-    /// Total tests remaining (pending + suspicious + assigned)
+    /// Total tests remaining (pending + suspicious + confirmed + assigned)
     /// </summary>
     public int RemainingCount
     {
@@ -26,7 +28,7 @@ public class WorkQueue
         {
             lock (_lock)
             {
-                return _pending.Count + _suspicious.Count + _assigned.Values.Sum(h => h.Count);
+                return _pending.Count + _suspicious.Count + _confirmed.Count + _assigned.Values.Sum(h => h.Count);
             }
         }
     }
@@ -54,6 +56,17 @@ public class WorkQueue
     }
 
     /// <summary>
+    /// Tests in confirmed queue (known timeout culprits, wait for isolation)
+    /// </summary>
+    public int ConfirmedCount
+    {
+        get
+        {
+            lock (_lock) return _confirmed.Count;
+        }
+    }
+
+    /// <summary>
     /// Check if there's pending work available
     /// </summary>
     public bool HasPendingWork
@@ -65,7 +78,7 @@ public class WorkQueue
     }
 
     /// <summary>
-    /// Check if all work is complete (nothing pending, suspicious, or assigned)
+    /// Check if all work is complete (nothing pending, suspicious, confirmed, or assigned)
     /// </summary>
     public bool IsComplete
     {
@@ -75,6 +88,7 @@ public class WorkQueue
             {
                 return _pending.Count == 0 &&
                        _suspicious.Count == 0 &&
+                       _confirmed.Count == 0 &&
                        _assigned.Values.All(h => h.Count == 0);
             }
         }
@@ -93,6 +107,7 @@ public class WorkQueue
 
     /// <summary>
     /// Take a batch of tests from pending queue.
+    /// When in isolation mode (maxSize=1) and pending is empty, pulls from confirmed.
     /// </summary>
     public List<string> TakeBatch(int workerId, int maxSize)
     {
@@ -102,9 +117,19 @@ public class WorkQueue
                 _assigned[workerId] = new HashSet<string>();
 
             var batch = new List<string>();
+
+            // First, pull from pending
             while (batch.Count < maxSize && _pending.Count > 0)
             {
                 var test = _pending.Dequeue();
+                batch.Add(test);
+                _assigned[workerId].Add(test);
+            }
+
+            // In isolation mode (batch=1), also pull from confirmed if pending is empty
+            if (maxSize == 1 && batch.Count == 0 && _confirmed.Count > 0)
+            {
+                var test = _confirmed.Dequeue();
                 batch.Add(test);
                 _assigned[workerId].Add(test);
             }
@@ -150,6 +175,25 @@ public class WorkQueue
                 {
                     assigned.Remove(test);
                     _suspicious.Enqueue(test);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Mark tests as confirmed bad - they triggered a timeout/crash.
+    /// These skip tier progression and wait for isolation mode (batch=1).
+    /// </summary>
+    public void MarkConfirmed(int workerId, IEnumerable<string> tests)
+    {
+        lock (_lock)
+        {
+            if (_assigned.TryGetValue(workerId, out var assigned))
+            {
+                foreach (var test in tests)
+                {
+                    assigned.Remove(test);
+                    _confirmed.Enqueue(test);
                 }
             }
         }

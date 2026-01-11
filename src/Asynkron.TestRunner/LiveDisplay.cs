@@ -32,7 +32,9 @@ public class LiveDisplay
     private string? _assemblyName;
     private int _workerCount = 1;
     private int _timeoutSeconds = 30;
+    private int _pendingCount;
     private int _suspiciousCount;
+    private int _confirmedCount;
     private int _currentBatchSize;
     private readonly Dictionary<int, WorkerState> _workerStates = new();
 
@@ -78,11 +80,13 @@ public class LiveDisplay
         lock (_lock) _timeoutSeconds = seconds;
     }
 
-    public void SetQueueStats(int suspiciousCount, int currentBatchSize)
+    public void SetQueueStats(int pendingCount, int suspiciousCount, int confirmedCount, int currentBatchSize)
     {
         lock (_lock)
         {
+            _pendingCount = pendingCount;
             _suspiciousCount = suspiciousCount;
+            _confirmedCount = confirmedCount;
             _currentBatchSize = currentBatchSize;
         }
     }
@@ -443,15 +447,10 @@ public class LiveDisplay
                 var age = (now - startTime).TotalSeconds;
                 var spinner = SpinnerFrames[(baseFrame + i) % SpinnerFrames.Length];
 
-                // Color based on age relative to timeout
-                var ratio = age / _timeoutSeconds;
-                var color = ratio switch
-                {
-                    >= 1.0 => "red",      // Over timeout - definitely stuck
-                    >= 0.75 => "orange3", // Approaching timeout
-                    >= 0.5 => "yellow",   // Getting old
-                    _ => "dim"            // Normal
-                };
+                // Smooth color fade from dim gray to red based on timeout progress
+                var ratio = Math.Clamp(age / _timeoutSeconds, 0, 1);
+                var (r, g, b) = Mix((128, 128, 128), (255, 60, 60), ratio);
+                var color = $"rgb({r},{g},{b})";
 
                 var ageStr = age >= 1 ? $" [{color}]{age:F0}s[/]" : "";
                 lines.Add(new Markup($"[cyan]{spinner}[/] [{color}]{Markup.Escape(Truncate(test, textWidth - 5))}{ageStr}[/]"));
@@ -517,14 +516,13 @@ public class LiveDisplay
             parts.Add($"[{color}]●[/]");
         }
 
-        // Show queue stats: suspicious count and current batch size
-        if (_suspiciousCount > 0 || _currentBatchSize > 0)
-        {
-            parts.Add(" [dim]|[/]");
-            if (_suspiciousCount > 0)
-                parts.Add($"[yellow]{_suspiciousCount} suspect[/]");
-            parts.Add($"[dim]batch={_currentBatchSize}[/]");
-        }
+        // Show queue stats
+        parts.Add($"[dim]|[/] [blue]{_pendingCount}[/] [dim]pending[/]");
+        if (_suspiciousCount > 0)
+            parts.Add($"[dim]|[/] [yellow]{_suspiciousCount}[/] [dim]suspect[/]");
+        if (_confirmedCount > 0)
+            parts.Add($"[dim]|[/] [red]{_confirmedCount}[/] [dim]confirmed[/]");
+        parts.Add($"[dim]| batch={_currentBatchSize}[/]");
 
         return new Markup(string.Join(" ", parts));
     }
@@ -533,6 +531,19 @@ public class LiveDisplay
     {
         if (text.Length <= maxLength) return text;
         return text[..(maxLength - 3)] + "...";
+    }
+
+    /// <summary>
+    /// Mix two colors. t=0 returns color1, t=1 returns color2, t=0.5 returns 50/50 mix.
+    /// </summary>
+    private static (int R, int G, int B) Mix((int R, int G, int B) color1, (int R, int G, int B) color2, double t)
+    {
+        t = Math.Clamp(t, 0, 1);
+        return (
+            (int)(color1.R + (color2.R - color1.R) * t),
+            (int)(color1.G + (color2.G - color1.G) * t),
+            (int)(color1.B + (color2.B - color1.B) * t)
+        );
     }
 
     public (int passed, int failed, int skipped, int hanging, int crashed) GetCounts()

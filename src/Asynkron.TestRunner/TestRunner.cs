@@ -184,7 +184,7 @@ public class TestRunner
                 // Monitor loop: refresh display and handle tier promotion
                 while (true)
                 {
-                    display.SetQueueStats(queue.SuspiciousCount, batchSizeHolder.Size);
+                    display.SetQueueStats(queue.PendingCount, queue.SuspiciousCount, queue.ConfirmedCount, batchSizeHolder.Size);
                     UpdateDisplay();
 
                     // Check if we need to promote suspicious tests (tier escalation)
@@ -192,15 +192,9 @@ public class TestRunner
                     {
                         var promoted = queue.PromoteSuspicious();
                         // Large batches: halve to clear good tests quickly
-                        // Small batches (<50): drop aggressively to pinpoint problems
+                        // Once under 100: go straight to isolation
                         var current = batchSizeHolder.Size;
-                        var newBatchSize = current switch
-                        {
-                            > 50 => current / 2,                // Large: halve (5000→2500→1250→...→50)
-                            > 10 => 5,                          // Medium: drop to 5
-                            > 1 => Math.Max(1, current / 2),    // Small: halve (5→2→1)
-                            _ => 1
-                        };
+                        var newBatchSize = current > 100 ? current / 2 : 1;
                         batchSizeHolder.Size = newBatchSize;
                         tier++;
                         Log(-1, $"TIER {tier}: Promoted {promoted} suspicious tests, batch size {current}→{newBatchSize}");
@@ -469,32 +463,40 @@ public class TestRunner
             }
             catch (TimeoutException)
             {
-                // Get ALL assigned tests (not just running) - some may not have started yet
-                var allAssigned = queue.GetAssigned(workerIndex);
-                Log(workerIndex, $"TIMEOUT: running={running.Count}, assigned={allAssigned.Count}");
-                // Move all assigned tests to suspicious for isolated retry
-                Log(workerIndex, $"Moving {allAssigned.Count} to suspicious");
-                queue.MarkSuspicious(workerIndex, allAssigned);
+                // Running tests caused the timeout - fast track to isolation
+                Log(workerIndex, $"TIMEOUT: {running.Count} running → confirmed, rest → suspicious");
+                queue.MarkConfirmed(workerIndex, running);
                 foreach (var fqn in running)
                 {
                     var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
                     display.TestRemoved(dn);
+                }
+                // Never-started tests go to suspicious (they might be fine)
+                var neverStarted = queue.GetAssigned(workerIndex);
+                if (neverStarted.Count > 0)
+                {
+                    Log(workerIndex, $"{neverStarted.Count} never started → suspicious");
+                    queue.MarkSuspicious(workerIndex, neverStarted);
                 }
                 worker.Kill();
                 display.WorkerRestarting(workerIndex);
             }
             catch (WorkerCrashedException ex)
             {
-                // Get ALL assigned tests (not just running) - some may not have started yet
-                var allAssigned = queue.GetAssigned(workerIndex);
-                Log(workerIndex, $"CRASHED: running={running.Count}, assigned={allAssigned.Count}, exit={ex.ExitCode}");
-                // Move all assigned tests to suspicious for isolated retry
-                Log(workerIndex, $"Moving {allAssigned.Count} to suspicious (crash)");
-                queue.MarkSuspicious(workerIndex, allAssigned);
+                // Running tests caused the crash - fast track to isolation
+                Log(workerIndex, $"CRASHED: {running.Count} running → confirmed, rest → suspicious, exit={ex.ExitCode}");
+                queue.MarkConfirmed(workerIndex, running);
                 foreach (var fqn in running)
                 {
                     var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
                     display.TestRemoved(dn);
+                }
+                // Never-started tests go to suspicious
+                var neverStarted = queue.GetAssigned(workerIndex);
+                if (neverStarted.Count > 0)
+                {
+                    Log(workerIndex, $"{neverStarted.Count} never started → suspicious");
+                    queue.MarkSuspicious(workerIndex, neverStarted);
                 }
                 display.WorkerRestarting(workerIndex);
             }
