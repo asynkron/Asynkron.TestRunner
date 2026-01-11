@@ -17,7 +17,9 @@ public class TestFilter
     {
         var filter = new TestFilter();
         if (string.IsNullOrWhiteSpace(filterString))
+        {
             return filter;
+        }
 
         var parts = filterString.Split('=', 2);
         if (parts.Length == 2)
@@ -59,16 +61,24 @@ public class TestFilter
     public bool Matches(DiscoveredTest test)
     {
         if (Namespace != null && !test.Namespace.Contains(Namespace, StringComparison.OrdinalIgnoreCase))
+        {
             return false;
+        }
 
         if (Class != null && !test.ClassName.Contains(Class, StringComparison.OrdinalIgnoreCase))
+        {
             return false;
+        }
 
         if (Method != null && !test.MethodName.Contains(Method, StringComparison.OrdinalIgnoreCase))
+        {
             return false;
+        }
 
         if (DisplayName != null && !test.DisplayName.Contains(DisplayName, StringComparison.OrdinalIgnoreCase))
+        {
             return false;
+        }
 
         return true;
     }
@@ -82,16 +92,24 @@ public class TestFilter
         var (ns, className, methodName) = ParseFqn(fullyQualifiedName);
 
         if (Namespace != null && !ns.Contains(Namespace, StringComparison.OrdinalIgnoreCase))
+        {
             return false;
+        }
 
         if (Class != null && !className.Contains(Class, StringComparison.OrdinalIgnoreCase))
+        {
             return false;
+        }
 
         if (Method != null && !methodName.Contains(Method, StringComparison.OrdinalIgnoreCase))
+        {
             return false;
+        }
 
         if (DisplayName != null && !displayName.Contains(DisplayName, StringComparison.OrdinalIgnoreCase))
+        {
             return false;
+        }
 
         return true;
     }
@@ -104,14 +122,18 @@ public class TestFilter
 
         var lastDot = baseFqn.LastIndexOf('.');
         if (lastDot < 0)
+        {
             return ("", "", baseFqn);
+        }
 
         var methodName = baseFqn[(lastDot + 1)..];
         var remainder = baseFqn[..lastDot];
 
         var secondLastDot = remainder.LastIndexOf('.');
         if (secondLastDot < 0)
+        {
             return ("", remainder, methodName);
+        }
 
         var className = remainder[(secondLastDot + 1)..];
         var ns = remainder[..secondLastDot];
@@ -124,10 +146,26 @@ public class TestFilter
     public override string ToString()
     {
         var parts = new List<string>();
-        if (Namespace != null) parts.Add($"Namespace={Namespace}");
-        if (Class != null) parts.Add($"Class={Class}");
-        if (Method != null) parts.Add($"Method={Method}");
-        if (DisplayName != null) parts.Add($"DisplayName={DisplayName}");
+        if (Namespace != null)
+        {
+            parts.Add($"Namespace={Namespace}");
+        }
+
+        if (Class != null)
+        {
+            parts.Add($"Class={Class}");
+        }
+
+        if (Method != null)
+        {
+            parts.Add($"Method={Method}");
+        }
+
+        if (DisplayName != null)
+        {
+            parts.Add($"DisplayName={DisplayName}");
+        }
+
         return parts.Count > 0 ? string.Join(", ", parts) : "(no filter)";
     }
 }
@@ -185,7 +223,7 @@ public static class TestDiscovery
 
         if (filter != null && !filter.IsEmpty)
         {
-            allTests = allTests.Where(t => filter.Matches(t)).ToList();
+            allTests = allTests.Where(filter.Matches).ToList();
         }
 
         return allTests;
@@ -212,7 +250,9 @@ public static class TestDiscovery
             foreach (var type in assembly.GetTypes())
             {
                 if (!type.IsClass || type.IsAbstract)
+                {
                     continue;
+                }
 
                 var className = type.Name;
                 var namespaceName = type.Namespace ?? "";
@@ -221,7 +261,9 @@ public static class TestDiscovery
                 {
                     var testInfo = AnalyzeTestMethod(method);
                     if (testInfo == null)
+                    {
                         continue;
+                    }
 
                     var (framework, testType, skipReason, testCases) = testInfo.Value;
                     var fqn = $"{namespaceName}.{className}.{method.Name}";
@@ -330,7 +372,10 @@ public static class TestDiscovery
                     testType = TestType.Theory;
                     // Can't resolve actual values at discovery time, mark as dynamic
                     if (testCases.Count == 0)
+                    {
                         testCases.Add("...");  // Placeholder for dynamic cases
+                    }
+
                     break;
 
                 case "IgnoreAttribute":
@@ -356,7 +401,9 @@ public static class TestDiscovery
         }
 
         if (framework == null)
+        {
             return null;
+        }
 
         return (framework.Value, testType, skipReason, testCases);
     }
@@ -365,14 +412,20 @@ public static class TestDiscovery
     {
         var arg = attr.NamedArguments.FirstOrDefault(a => a.MemberName == name);
         if (arg.TypedValue.Value is T value)
+        {
             return value;
+        }
+
         return default;
     }
 
     private static T? GetConstructorArgument<T>(CustomAttributeData attr, int index)
     {
         if (index < attr.ConstructorArguments.Count && attr.ConstructorArguments[index].Value is T value)
+        {
             return value;
+        }
+
         return default;
     }
 

@@ -61,7 +61,10 @@ public class TestRunner
 
     private void Log(int workerIndex, string message)
     {
-        if (!_verbose && _logFile == null) return;
+        if (!_verbose && _logFile == null)
+        {
+            return;
+        }
 
         var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
         var line = $"[{timestamp}] Worker {workerIndex}: {message}";
@@ -69,9 +72,14 @@ public class TestRunner
         lock (_logLock)
         {
             if (_logFile != null)
+            {
                 File.AppendAllText(_logFile, line + Environment.NewLine);
+            }
+
             if (_verbose)
+            {
                 Console.Error.WriteLine(line);
+            }
         }
     }
 
@@ -114,7 +122,9 @@ public class TestRunner
     private string? GetResumeFilePath()
     {
         if (_resumeFilePath == null)
+        {
             return null;
+        }
 
         return string.IsNullOrWhiteSpace(_resumeFilePath)
             ? Path.Combine(_store.BaseFolder, "resume.jsonl")
@@ -156,7 +166,7 @@ public class TestRunner
             List<string> allTests;
             await using (var discoveryWorker = WorkerProcess.Spawn())
             {
-                var discovered = await discoveryWorker.DiscoverAsync(assemblyPath);
+                var discovered = await discoveryWorker.DiscoverAsync(assemblyPath, ct);
                 var totalDiscovered = discovered.Count;
 
                 // Apply filter if specified
@@ -174,9 +184,14 @@ public class TestRunner
             if (allTests.Count == 0)
             {
                 if (!string.IsNullOrWhiteSpace(_filter))
+                {
                     AnsiConsole.MarkupLine($"[yellow]No tests match filter:[/] {_filter}");
+                }
                 else
+                {
                     AnsiConsole.MarkupLine($"[yellow]No tests found[/]");
+                }
+
                 continue;
             }
 
@@ -260,7 +275,9 @@ public class TestRunner
 
                     // Check if all work is done
                     if (queue.IsComplete)
+                    {
                         break;
+                    }
 
                     await Task.Delay(100, ct);
                 }
@@ -283,11 +300,15 @@ public class TestRunner
                 {
                     var firstLine = stack.Split('\n').FirstOrDefault()?.Trim();
                     if (firstLine != null)
+                    {
                         AnsiConsole.MarkupLine($"[dim]    {EscapeMarkup(firstLine)}[/]");
+                    }
                 }
             }
             if (failureDetails.Count > 10)
+            {
                 AnsiConsole.MarkupLine($"[dim]  ...and {failureDetails.Count - 10} more[/]");
+            }
         }
     }
 
@@ -382,7 +403,11 @@ public class TestRunner
                             Log(workerIndex, $"HANGING: {fqn}");
                             running.Remove(fqn);
                             queue.TestHanging(workerIndex, fqn);
-                            lock (results) results.Hanging.Add(fqn);
+                            lock (results)
+                            {
+                                results.Hanging.Add(fqn);
+                            }
+
                             var displayName = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
                             display.TestHanging(displayName);
                             MarkResume(resumeTracker, "hanging", fqn, displayName);
@@ -424,7 +449,11 @@ public class TestRunner
                             running.Remove(testPassed.FullyQualifiedName);
                             queue.TestCompleted(workerIndex, testPassed.FullyQualifiedName);
                             completedInBatch++;
-                            lock (results) results.Passed.Add(testPassed.FullyQualifiedName);
+                            lock (results)
+                            {
+                                results.Passed.Add(testPassed.FullyQualifiedName);
+                            }
+
                             display.TestPassed(testPassed.DisplayName);
                             MarkResume(resumeTracker, "passed", testPassed.FullyQualifiedName, testPassed.DisplayName);
                             _resultCallback?.Invoke(new TestResultDetail(
@@ -441,10 +470,18 @@ public class TestRunner
                             running.Remove(testFailed.FullyQualifiedName);
                             queue.TestCompleted(workerIndex, testFailed.FullyQualifiedName);
                             completedInBatch++;
-                            lock (results) results.Failed.Add(testFailed.FullyQualifiedName);
+                            lock (results)
+                            {
+                                results.Failed.Add(testFailed.FullyQualifiedName);
+                            }
+
                             display.TestFailed(testFailed.DisplayName);
                             MarkResume(resumeTracker, "failed", testFailed.FullyQualifiedName, testFailed.DisplayName);
-                            lock (failureLock) failureDetails.Add((testFailed.DisplayName, testFailed.ErrorMessage, testFailed.StackTrace));
+                            lock (failureLock)
+                            {
+                                failureDetails.Add((testFailed.DisplayName, testFailed.ErrorMessage, testFailed.StackTrace));
+                            }
+
                             _resultCallback?.Invoke(new TestResultDetail(
                                 testFailed.FullyQualifiedName,
                                 testFailed.DisplayName,
@@ -461,7 +498,11 @@ public class TestRunner
                             running.Remove(testSkipped.FullyQualifiedName);
                             queue.TestCompleted(workerIndex, testSkipped.FullyQualifiedName);
                             completedInBatch++;
-                            lock (results) results.Skipped.Add(testSkipped.FullyQualifiedName);
+                            lock (results)
+                            {
+                                results.Skipped.Add(testSkipped.FullyQualifiedName);
+                            }
+
                             display.TestSkipped(testSkipped.DisplayName);
                             MarkResume(resumeTracker, "skipped", testSkipped.FullyQualifiedName, testSkipped.DisplayName);
                             _resultCallback?.Invoke(new TestResultDetail(
@@ -479,7 +520,11 @@ public class TestRunner
                             {
                                 running.Remove(fqn);
                                 queue.TestCompleted(workerIndex, fqn);
-                                lock (results) results.Crashed.Add(fqn);
+                                lock (results)
+                                {
+                                    results.Crashed.Add(fqn);
+                                }
+
                                 var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
                                 display.TestCrashed(dn);
                                 MarkResume(resumeTracker, "crashed", fqn, dn);
@@ -511,7 +556,11 @@ public class TestRunner
                         {
                             running.Remove(fqn);
                             queue.TestCompleted(workerIndex, fqn);
-                            lock (results) results.Crashed.Add(fqn);
+                            lock (results)
+                            {
+                                results.Crashed.Add(fqn);
+                            }
+
                             var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
                             display.TestCrashed(dn);
                             MarkResume(resumeTracker, "crashed", fqn, dn);
@@ -604,7 +653,10 @@ public class TestRunner
         while (pending.Count > 0 && attempts < maxAttempts)
         {
             if (ct.IsCancellationRequested)
+            {
                 return;
+            }
+
             attempts++;
             running.Clear();
 
@@ -692,7 +744,7 @@ public class TestRunner
         }
     }
 
-    private void PrintSummary(TestResults results, TimeSpan elapsed)
+    private static void PrintSummary(TestResults results, TimeSpan elapsed)
     {
         Console.WriteLine();
 
@@ -715,9 +767,14 @@ public class TestRunner
             Console.WriteLine();
             AnsiConsole.MarkupLine($"[red]⏱ Hanging tests ({results.Hanging.Count}):[/]");
             foreach (var test in results.Hanging.Take(10))
+            {
                 AnsiConsole.MarkupLine($"  [red]→[/] {test}");
+            }
+
             if (results.Hanging.Count > 10)
+            {
                 AnsiConsole.MarkupLine($"  [dim]...and {results.Hanging.Count - 10} more[/]");
+            }
         }
 
         if (results.Crashed.Count > 0)
@@ -725,9 +782,14 @@ public class TestRunner
             Console.WriteLine();
             AnsiConsole.MarkupLine($"[red]💥 Crashed tests ({results.Crashed.Count}):[/]");
             foreach (var test in results.Crashed.Take(10))
+            {
                 AnsiConsole.MarkupLine($"  [red]→[/] {test}");
+            }
+
             if (results.Crashed.Count > 10)
+            {
                 AnsiConsole.MarkupLine($"  [dim]...and {results.Crashed.Count - 10} more[/]");
+            }
         }
     }
 
@@ -760,9 +822,14 @@ public class TestRunner
                 Console.WriteLine();
                 AnsiConsole.MarkupLine($"[red]⚠ {regressions.Count} regression(s) detected![/]");
                 foreach (var reg in regressions.Take(5))
+                {
                     AnsiConsole.MarkupLine($"  [red]→[/] {reg}");
+                }
+
                 if (regressions.Count > 5)
+                {
                     AnsiConsole.MarkupLine($"  [dim]...and {regressions.Count - 5} more[/]");
+                }
             }
 
             fixes = result.GetFixes(previous);
@@ -874,7 +941,9 @@ public static class AsyncEnumerableExtensions
                 var hasNext = await enumerator.MoveNextAsync().AsTask().WaitAsync(timeout, cts.Token);
 
                 if (!hasNext)
+                {
                     yield break;
+                }
 
                 yield return enumerator.Current;
             }

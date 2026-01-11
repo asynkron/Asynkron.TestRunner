@@ -14,8 +14,6 @@ public record IsolationResult(
 
 public class IsolateRunner
 {
-    private const int MaxTestsPerBatch = 5000;
-
     private readonly TimeoutStrategy _timeoutStrategy;
     private readonly string[] _baseTestArgs;
     private readonly string? _initialFilter;
@@ -125,13 +123,17 @@ public class IsolateRunner
     private static IEnumerable<TestTreeNode> GetLeaves(TestTreeNode node)
     {
         if (node.Children.Count == 0)
+        {
             yield return node;
+        }
         else
         {
             foreach (var child in node.Children)
             {
                 foreach (var leaf in GetLeaves(child))
+                {
                     yield return leaf;
+                }
             }
         }
     }

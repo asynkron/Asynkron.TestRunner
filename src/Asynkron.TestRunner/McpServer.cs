@@ -26,7 +26,10 @@ public class McpServer
         while (!ct.IsCancellationRequested)
         {
             var line = await reader.ReadLineAsync(ct);
-            if (line == null) break;
+            if (line == null)
+            {
+                break;
+            }
 
             try
             {
@@ -52,7 +55,10 @@ public class McpServer
 
     private async Task<JsonNode?> HandleRequestAsync(JsonNode? request)
     {
-        if (request == null) return null;
+        if (request == null)
+        {
+            return null;
+        }
 
         var method = request["method"]?.GetValue<string>();
         var id = request["id"];
@@ -80,7 +86,10 @@ public class McpServer
             };
         }
 
-        if (result == null) return null;
+        if (result == null)
+        {
+            return null;
+        }
 
         return new JsonObject
         {
@@ -90,7 +99,7 @@ public class McpServer
         };
     }
 
-    private JsonNode HandleInitialize()
+    private static JsonNode HandleInitialize()
     {
         return new JsonObject
         {
@@ -107,7 +116,7 @@ public class McpServer
         };
     }
 
-    private JsonNode HandleToolsList()
+    private static JsonNode HandleToolsList()
     {
         return new JsonObject
         {
@@ -311,7 +320,9 @@ public class McpServer
         var json = JsonNode.Parse(result);
 
         if (json?["error"] != null)
+        {
             throw new Exception(json["error"]!.GetValue<string>());
+        }
 
         var count = json?["count"]?.GetValue<int>() ?? 0;
         var tests = json?["tests"]?.AsArray();
@@ -325,7 +336,9 @@ public class McpServer
                 sb.AppendLine($"  - {test?["FullyQualifiedName"]?.GetValue<string>()}");
             }
             if (count > 50)
+            {
                 sb.AppendLine($"  ... and {count - 50} more");
+            }
         }
 
         return sb.ToString();
@@ -348,7 +361,9 @@ public class McpServer
         var json = JsonNode.Parse(result);
 
         if (json?["error"] != null)
+        {
             throw new Exception(json["error"]!.GetValue<string>());
+        }
 
         var runId = json?["runId"]?.GetValue<string>();
         return $"Test run started (ID: {runId}). Use get_status to check progress, or watch the server terminal for live UI.";
@@ -363,13 +378,17 @@ public class McpServer
         var state = json?["state"]?.GetValue<string>() ?? "unknown";
 
         if (state == "idle")
+        {
             return "No test run in progress.";
+        }
 
         var sb = new System.Text.StringBuilder();
         sb.AppendLine($"State: {state}");
 
         if (json?["assembly"] != null)
+        {
             sb.AppendLine($"Assembly: {json["assembly"]!.GetValue<string>()}");
+        }
 
         var passed = json?["passed"]?.GetValue<int>() ?? 0;
         var failed = json?["failed"]?.GetValue<int>() ?? 0;
@@ -382,10 +401,26 @@ public class McpServer
         {
             sb.AppendLine($"Progress: {total} tests completed");
             sb.AppendLine($"  ✓ Passed: {passed}");
-            if (failed > 0) sb.AppendLine($"  ✗ Failed: {failed}");
-            if (crashed > 0) sb.AppendLine($"  💥 Crashed: {crashed}");
-            if (hanging > 0) sb.AppendLine($"  ⏱ Hanging: {hanging}");
-            if (skipped > 0) sb.AppendLine($"  ⊘ Skipped: {skipped}");
+            if (failed > 0)
+            {
+                sb.AppendLine($"  ✗ Failed: {failed}");
+            }
+
+            if (crashed > 0)
+            {
+                sb.AppendLine($"  💥 Crashed: {crashed}");
+            }
+
+            if (hanging > 0)
+            {
+                sb.AppendLine($"  ⏱ Hanging: {hanging}");
+            }
+
+            if (skipped > 0)
+            {
+                sb.AppendLine($"  ⊘ Skipped: {skipped}");
+            }
+
             sb.AppendLine();
             sb.AppendLine("Tests are running. Watch the server terminal for live progress.");
         }
@@ -411,7 +446,9 @@ public class McpServer
                         sb.AppendLine($"  {icon} {test?.GetValue<string>()}");
                     }
                     if (tests.Count > 10)
+                    {
                         sb.AppendLine($"  ... and {tests.Count - 10} more");
+                    }
                 }
             }
 
@@ -441,15 +478,19 @@ public class McpServer
     {
         var pattern = args?["pattern"]?.GetValue<string>();
         if (string.IsNullOrWhiteSpace(pattern))
+        {
             throw new Exception("Pattern is required");
+        }
 
         var response = await _http.GetAsync($"/result?pattern={Uri.EscapeDataString(pattern)}");
         var result = await response.Content.ReadAsStringAsync();
         var json = JsonNode.Parse(result);
 
         if (json?["error"] != null)
+        {
             return $"Error: {json["error"]!.GetValue<string>()}" +
                    (json["totalTests"] != null ? $" (total tests in results: {json["totalTests"]!.GetValue<int>()})" : "");
+        }
 
         var count = json?["count"]?.GetValue<int>() ?? 0;
         var results = json?["results"]?.AsArray();
@@ -475,7 +516,9 @@ public class McpServer
                 sb.AppendLine($"Duration: {durationMs:F1}ms");
 
                 if (!string.IsNullOrEmpty(skipReason))
+                {
                     sb.AppendLine($"Skip reason: {skipReason}");
+                }
 
                 if (!string.IsNullOrEmpty(errorMessage))
                 {
@@ -508,7 +551,9 @@ public class McpServer
 
         var queryString = $"?status={Uri.EscapeDataString(status)}";
         if (!string.IsNullOrWhiteSpace(pattern))
+        {
             queryString += $"&pattern={Uri.EscapeDataString(pattern)}";
+        }
 
         var response = await _http.GetAsync($"/list{queryString}");
         var result = await response.Content.ReadAsStringAsync();
@@ -521,9 +566,15 @@ public class McpServer
         var sb = new System.Text.StringBuilder();
         sb.AppendLine($"Found {count} tests (of {totalTests} total)");
         if (status != "all")
+        {
             sb.AppendLine($"Filter: status={status}");
+        }
+
         if (!string.IsNullOrWhiteSpace(pattern))
+        {
             sb.AppendLine($"Filter: pattern={pattern}");
+        }
+
         sb.AppendLine();
 
         if (tests != null && tests.Count > 0)
@@ -559,13 +610,24 @@ public class McpServer
                     var hasError = test?["hasError"]?.GetValue<bool>() ?? false;
                     var hasOutput = test?["hasOutput"]?.GetValue<bool>() ?? false;
                     var annotations = new List<string>();
-                    if (hasError) annotations.Add("has error");
-                    if (hasOutput) annotations.Add("has output");
+                    if (hasError)
+                    {
+                        annotations.Add("has error");
+                    }
+
+                    if (hasOutput)
+                    {
+                        annotations.Add("has output");
+                    }
+
                     var suffix = annotations.Count > 0 ? $" ({string.Join(", ", annotations)})" : "";
                     sb.AppendLine($"  {icon} {name}{suffix}");
                 }
                 if (group.Count() > 50)
+                {
                     sb.AppendLine($"  ... and {group.Count() - 50} more");
+                }
+
                 sb.AppendLine();
             }
         }

@@ -1,7 +1,7 @@
 using Asynkron.TestRunner;
 
 // Handle Ctrl+C to kill worker processes
-Console.CancelKeyPress += (_, e) =>
+Console.CancelKeyPress += (_, _) =>
 {
     WorkerProcess.KillAll();
     Environment.Exit(130); // Standard exit code for Ctrl+C
@@ -123,7 +123,9 @@ static string? ParseLogFile(string[] args)
         if (args[i].Equals("--log", StringComparison.OrdinalIgnoreCase))
         {
             if (i + 1 < args.Length)
+            {
                 return args[i + 1];
+            }
             // No argument provided, use default
             return "testrunner.log";
         }
@@ -138,7 +140,7 @@ static bool ParseResume(string[] args, out string? resumeFile)
     {
         if (args[i].Equals("--resume", StringComparison.OrdinalIgnoreCase))
         {
-            if (i + 1 < args.Length && !args[i + 1].StartsWith("-", StringComparison.Ordinal))
+            if (i + 1 < args.Length && !args[i + 1].StartsWith('-'))
             {
                 resumeFile = args[i + 1];
             }
@@ -191,7 +193,9 @@ static int? ParsePort(string[] args)
         if (args[i].Equals("--port", StringComparison.OrdinalIgnoreCase))
         {
             if (i + 1 < args.Length && int.TryParse(args[i + 1], out var port))
+            {
                 return port;
+            }
         }
     }
     return null;

@@ -148,7 +148,9 @@ public static class ProtocolIO
     public static ProtocolMessage? Deserialize(string line)
     {
         if (string.IsNullOrWhiteSpace(line))
+        {
             return null;
+        }
 
         try
         {

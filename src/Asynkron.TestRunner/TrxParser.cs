@@ -10,20 +10,26 @@ public static class TrxParser
     public static TestRunResult? ParseTrxFile(string filePath)
     {
         if (!File.Exists(filePath))
+        {
             return null;
+        }
 
         try
         {
             var doc = XDocument.Load(filePath);
             var root = doc.Root;
             if (root == null)
+            {
                 return null;
+            }
 
             var resultSummary = root.Element(TrxNamespace + "ResultSummary");
             var counters = resultSummary?.Element(TrxNamespace + "Counters");
 
             if (counters == null)
+            {
                 return null;
+            }
 
             var passed = int.Parse(counters.Attribute("passed")?.Value ?? "0");
             var failed = int.Parse(counters.Attribute("failed")?.Value ?? "0");
@@ -77,7 +83,9 @@ public static class TrxParser
 
         var results = root.Element(TrxNamespace + "Results");
         if (results == null)
+        {
             return (passed, failed, timedOut);
+        }
 
         foreach (var result in results.Elements(TrxNamespace + "UnitTestResult"))
         {
@@ -85,7 +93,9 @@ public static class TrxParser
             var outcome = result.Attribute("outcome")?.Value;
 
             if (string.IsNullOrEmpty(testName))
+            {
                 continue;
+            }
 
             switch (outcome?.ToLowerInvariant())
             {
@@ -127,11 +137,15 @@ public static class TrxParser
     public static TestRunResult? ParseFromDirectory(string trxDirectory)
     {
         if (!Directory.Exists(trxDirectory))
+        {
             return null;
+        }
 
         var trxFiles = Directory.GetFiles(trxDirectory, "*.trx");
         if (trxFiles.Length == 0)
+        {
             return null;
+        }
 
         // Aggregate results from multiple TRX files (parallel test runs)
         var results = trxFiles
@@ -140,7 +154,9 @@ public static class TrxParser
             .ToList();
 
         if (results.Count == 0)
+        {
             return null;
+        }
 
         return MergeResults(results!);
     }
@@ -153,10 +169,14 @@ public static class TrxParser
     {
         var resultsList = results.ToList();
         if (resultsList.Count == 0)
+        {
             throw new ArgumentException("No results to merge", nameof(results));
+        }
 
         if (resultsList.Count == 1)
+        {
             return resultsList[0];
+        }
 
         // Use dictionaries to track the final state of each test
         // Priority: Passed > Failed > TimedOut (if a test ever passes, it's passed)

@@ -16,7 +16,9 @@ public class WorkQueue
     public WorkQueue(IEnumerable<string> tests)
     {
         foreach (var test in tests)
+        {
             _pending.Enqueue(test);
+        }
     }
 
     /// <summary>
@@ -40,7 +42,10 @@ public class WorkQueue
     {
         get
         {
-            lock (_lock) return _pending.Count;
+            lock (_lock)
+            {
+                return _pending.Count;
+            }
         }
     }
 
@@ -51,7 +56,10 @@ public class WorkQueue
     {
         get
         {
-            lock (_lock) return _suspicious.Count;
+            lock (_lock)
+            {
+                return _suspicious.Count;
+            }
         }
     }
 
@@ -62,7 +70,10 @@ public class WorkQueue
     {
         get
         {
-            lock (_lock) return _confirmed.Count;
+            lock (_lock)
+            {
+                return _confirmed.Count;
+            }
         }
     }
 
@@ -73,7 +84,10 @@ public class WorkQueue
     {
         get
         {
-            lock (_lock) return _pending.Count > 0;
+            lock (_lock)
+            {
+                return _pending.Count > 0;
+            }
         }
     }
 
@@ -101,7 +115,10 @@ public class WorkQueue
     {
         get
         {
-            lock (_lock) return _assigned.Values.All(h => h.Count == 0);
+            lock (_lock)
+            {
+                return _assigned.Values.All(h => h.Count == 0);
+            }
         }
     }
 
@@ -113,8 +130,11 @@ public class WorkQueue
     {
         lock (_lock)
         {
-            if (!_assigned.ContainsKey(workerId))
-                _assigned[workerId] = new HashSet<string>();
+            if (!_assigned.TryGetValue(workerId, out var value))
+            {
+                value = new HashSet<string>();
+                _assigned[workerId] = value;
+            }
 
             var batch = new List<string>();
 
@@ -123,7 +143,7 @@ public class WorkQueue
             {
                 var test = _pending.Dequeue();
                 batch.Add(test);
-                _assigned[workerId].Add(test);
+                value.Add(test);
             }
 
             // In isolation mode (batch=1), also pull from confirmed if pending is empty
@@ -131,7 +151,7 @@ public class WorkQueue
             {
                 var test = _confirmed.Dequeue();
                 batch.Add(test);
-                _assigned[workerId].Add(test);
+                value.Add(test);
             }
 
             return batch;
@@ -146,7 +166,9 @@ public class WorkQueue
         lock (_lock)
         {
             if (_assigned.TryGetValue(workerId, out var assigned))
+            {
                 assigned.Remove(fqn);
+            }
         }
     }
 
@@ -158,7 +180,9 @@ public class WorkQueue
         lock (_lock)
         {
             if (_assigned.TryGetValue(workerId, out var assigned))
+            {
                 assigned.Remove(fqn);
+            }
         }
     }
 
@@ -225,11 +249,15 @@ public class WorkQueue
         lock (_lock)
         {
             if (!_assigned.TryGetValue(workerId, out var assigned))
+            {
                 return [];
+            }
 
             var reclaimed = assigned.ToList();
             foreach (var test in reclaimed)
+            {
                 _suspicious.Enqueue(test);
+            }
 
             assigned.Clear();
             return reclaimed;
@@ -244,7 +272,10 @@ public class WorkQueue
         lock (_lock)
         {
             if (_assigned.TryGetValue(workerId, out var assigned))
+            {
                 return assigned.ToList();
+            }
+
             return [];
         }
     }

@@ -1,3 +1,4 @@
+using System.Globalization;
 using Asynkron.TestRunner.Models;
 
 namespace Asynkron.TestRunner;
@@ -28,21 +29,29 @@ public static class ChartRenderer
     {
         // NO_COLOR is a standard env var to disable colors
         if (Environment.GetEnvironmentVariable("NO_COLOR") != null)
+        {
             return false;
+        }
 
         // If output is redirected (piped), don't use colors
         if (Console.IsOutputRedirected)
+        {
             return false;
+        }
 
         // Check for dumb terminal
         var term = Environment.GetEnvironmentVariable("TERM");
         if (term == "dumb")
+        {
             return false;
+        }
 
         // Check CI environments that may not support colors
         if (Environment.GetEnvironmentVariable("CI") != null &&
             Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == null) // GitHub Actions supports colors
+        {
             return false;
+        }
 
         return true;
     }
@@ -159,13 +168,16 @@ public static class ChartRenderer
 
     private static void RenderBar(TestRunResult result, int maxTotal)
     {
-        var timestamp = result.Timestamp.ToString("yyyy-MM-dd HH:mm");
+        var timestamp = result.Timestamp.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
         var passedWidth = maxTotal > 0 ? (int)((double)result.Passed / maxTotal * BarWidth) : 0;
         var failedWidth = maxTotal > 0 ? (int)((double)result.Failed / maxTotal * BarWidth) : 0;
         var skippedWidth = maxTotal > 0 ? (int)((double)result.Skipped / maxTotal * BarWidth) : 0;
 
         // Ensure at least 1 char for failed if there are failures
-        if (result.Failed > 0 && failedWidth == 0) failedWidth = 1;
+        if (result.Failed > 0 && failedWidth == 0)
+        {
+            failedWidth = 1;
+        }
 
         var passedBar = new string(PassedChar, passedWidth);
         var failedBar = new string(FailedChar, failedWidth);
@@ -189,7 +201,10 @@ public static class ChartRenderer
     private static string FormatDuration(TimeSpan duration)
     {
         if (duration.TotalMinutes >= 1)
+        {
             return $"{duration.TotalMinutes:F1}m";
+        }
+
         return $"{duration.TotalSeconds:F1}s";
     }
 

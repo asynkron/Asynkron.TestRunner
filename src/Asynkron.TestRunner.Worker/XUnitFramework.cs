@@ -122,12 +122,12 @@ public class XUnitFramework : ITestFramework
         await runTask;
     }
 
-    private class NullMessageSink : IMessageSink
+    private sealed class NullMessageSink : IMessageSink
     {
         public bool OnMessage(IMessageSinkMessage message) => true;
     }
 
-    private class DiscoverySink : IMessageSink
+    private sealed class DiscoverySink : IMessageSink
     {
         public List<TestInfo> Tests { get; } = new();
         public List<ITestCase> TestCases { get; } = new();
@@ -156,7 +156,7 @@ public class XUnitFramework : ITestFramework
         }
     }
 
-    private class ExecutionSink : IMessageSink
+    private sealed class ExecutionSink : IMessageSink
     {
         private readonly ChannelWriter<TestResult> _writer;
         private readonly CancellationToken _ct;
@@ -227,7 +227,7 @@ public class XUnitFramework : ITestFramework
     /// <summary>
     /// Assembly resolver that looks in the test assembly's directory
     /// </summary>
-    private class TestAssemblyResolver : IDisposable
+    private sealed class TestAssemblyResolver : IDisposable
     {
         private readonly string _assemblyDir;
 

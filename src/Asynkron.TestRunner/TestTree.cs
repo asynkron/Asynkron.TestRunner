@@ -186,7 +186,9 @@ public class TestTree
     public static TestTreeNode? FindNodeByPath(TestTreeNode root, string path)
     {
         if (string.IsNullOrWhiteSpace(path))
+        {
             return root;
+        }
 
         var parts = path.Split(NameSeparators, StringSplitOptions.RemoveEmptyEntries);
         var current = root;
@@ -202,7 +204,10 @@ public class TestTree
                     c.FullPath.Contains(part, StringComparison.OrdinalIgnoreCase));
             }
             if (child == null)
+            {
                 return null;
+            }
+
             current = child;
         }
 

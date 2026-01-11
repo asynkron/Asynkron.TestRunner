@@ -41,7 +41,9 @@ internal sealed class ResumeTracker
     public static ResumeTracker? TryLoad(string? filePath, string assemblyPath, IReadOnlyList<string> allTests)
     {
         if (string.IsNullOrWhiteSpace(filePath))
+        {
             return null;
+        }
 
         return new ResumeTracker(filePath, assemblyPath, allTests);
     }
@@ -81,7 +83,9 @@ internal sealed class ResumeTracker
         lock (_lock)
         {
             if (_completedIndex.ContainsKey(testName))
+            {
                 return;
+            }
 
             var entry = new ResumeEntry
             {
@@ -106,7 +110,9 @@ internal sealed class ResumeTracker
     private static ResumeLoadResult LoadState(string filePath, string assemblyPath)
     {
         if (!File.Exists(filePath))
+        {
             return new ResumeLoadResult(null, null, []);
+        }
 
         string? latestRunId = null;
         List<string>? latestTests = null;
@@ -117,7 +123,9 @@ internal sealed class ResumeTracker
             foreach (var line in File.ReadLines(filePath))
             {
                 if (string.IsNullOrWhiteSpace(line))
+                {
                     continue;
+                }
 
                 ResumeLine? resumeLine;
                 try
@@ -130,7 +138,9 @@ internal sealed class ResumeTracker
                 }
 
                 if (resumeLine?.Type == null)
+                {
                     continue;
+                }
 
                 if (resumeLine.Type.Equals("tests", StringComparison.OrdinalIgnoreCase))
                 {
@@ -145,10 +155,14 @@ internal sealed class ResumeTracker
                     }
 
                     if (testsLine == null)
+                    {
                         continue;
+                    }
 
                     if (Path.GetFullPath(testsLine.AssemblyPath) != assemblyPath)
+                    {
                         continue;
+                    }
 
                     latestRunId = testsLine.RunId;
                     latestTests = testsLine.Tests ?? [];
@@ -168,10 +182,14 @@ internal sealed class ResumeTracker
                     }
 
                     if (resultLine == null || string.IsNullOrEmpty(resultLine.RunId))
+                    {
                         continue;
+                    }
 
                     if (Path.GetFullPath(resultLine.AssemblyPath) != assemblyPath)
+                    {
                         continue;
+                    }
 
                     if (!completedByRun.TryGetValue(resultLine.RunId, out var entries))
                     {
@@ -197,10 +215,14 @@ internal sealed class ResumeTracker
         }
 
         if (latestRunId == null)
+        {
             return new ResumeLoadResult(null, latestTests, []);
+        }
 
         if (!completedByRun.TryGetValue(latestRunId, out var latestCompleted))
+        {
             latestCompleted = new Dictionary<string, ResumeEntry>();
+        }
 
         return new ResumeLoadResult(latestRunId, latestTests, latestCompleted.Values.ToList());
     }
@@ -222,7 +244,9 @@ internal sealed class ResumeTracker
         {
             var directory = Path.GetDirectoryName(_filePath);
             if (!string.IsNullOrEmpty(directory))
+            {
                 Directory.CreateDirectory(directory);
+            }
 
             var json = JsonSerializer.Serialize(payload, JsonOptions);
             File.AppendAllText(_filePath, json + Environment.NewLine);
@@ -236,10 +260,14 @@ internal sealed class ResumeTracker
     private static bool MatchesTests(List<string>? storedTests, List<string> currentTests)
     {
         if (storedTests == null || storedTests.Count == 0)
+        {
             return false;
+        }
 
         if (storedTests.Count != currentTests.Count)
+        {
             return false;
+        }
 
         return new HashSet<string>(storedTests).SetEquals(currentTests);
     }

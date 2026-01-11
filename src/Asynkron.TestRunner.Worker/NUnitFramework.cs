@@ -82,11 +82,15 @@ public class NUnitFramework : ITestFramework
     private static TestFilter BuildFilter(IEnumerable<string>? testFqns)
     {
         if (testFqns == null)
+        {
             return TestFilter.Empty;
+        }
 
         var fqnList = testFqns.ToList();
         if (fqnList.Count == 0)
+        {
             return TestFilter.Empty;
+        }
 
         // NUnit filter format: <filter><or><test>FQN1</test><test>FQN2</test></or></filter>
         var filterBuilder = new System.Text.StringBuilder("<filter>");
@@ -124,7 +128,9 @@ public class NUnitFramework : ITestFramework
     {
         var testCases = node.SelectNodes("//test-case");
         if (testCases == null)
+        {
             yield break;
+        }
 
         foreach (XmlNode testCase in testCases)
         {
@@ -143,48 +149,7 @@ public class NUnitFramework : ITestFramework
         }
     }
 
-    private static void ParseResults(XmlNode resultXml, ChannelWriter<TestResult> writer)
-    {
-        var testCases = resultXml.SelectNodes("//test-case");
-        if (testCases == null)
-            return;
-
-        foreach (XmlNode testCase in testCases)
-        {
-            var fullname = testCase.Attributes?["fullname"]?.Value ?? "";
-            var name = testCase.Attributes?["name"]?.Value ?? fullname;
-            var result = testCase.Attributes?["result"]?.Value ?? "";
-            var durationStr = testCase.Attributes?["duration"]?.Value ?? "0";
-
-            if (!double.TryParse(durationStr, out var durationSecs))
-                durationSecs = 0;
-
-            var duration = TimeSpan.FromSeconds(durationSecs);
-
-            switch (result.ToLowerInvariant())
-            {
-                case "passed":
-                    writer.TryWrite(new TestPassed(fullname, name, duration));
-                    break;
-
-                case "failed":
-                    var failureNode = testCase.SelectSingleNode("failure");
-                    var message = failureNode?.SelectSingleNode("message")?.InnerText ?? "Test failed";
-                    var stackTrace = failureNode?.SelectSingleNode("stack-trace")?.InnerText;
-                    writer.TryWrite(new TestFailed(fullname, name, duration, message, stackTrace));
-                    break;
-
-                case "skipped":
-                case "ignored":
-                    var reasonNode = testCase.SelectSingleNode("reason/message");
-                    var reason = reasonNode?.InnerText;
-                    writer.TryWrite(new TestSkipped(fullname, name, reason));
-                    break;
-            }
-        }
-    }
-
-    private class TestEventHandler : ITestEventListener
+    private sealed class TestEventHandler : ITestEventListener
     {
         private readonly ChannelWriter<TestResult> _writer;
         private readonly CancellationToken _ct;
@@ -198,7 +163,9 @@ public class NUnitFramework : ITestFramework
         public void OnTestEvent(string report)
         {
             if (_ct.IsCancellationRequested)
+            {
                 return;
+            }
 
             try
             {
@@ -207,7 +174,9 @@ public class NUnitFramework : ITestFramework
                 var root = doc.DocumentElement;
 
                 if (root == null)
+                {
                     return;
+                }
 
                 switch (root.Name)
                 {
@@ -225,7 +194,10 @@ public class NUnitFramework : ITestFramework
                         var outFullname = root.Attributes?["testname"]?.Value ?? "";
                         var output = root.InnerText;
                         if (!string.IsNullOrEmpty(output))
+                        {
                             _writer.TryWrite(new TestOutput(outFullname, output));
+                        }
+
                         break;
                 }
             }
@@ -244,7 +216,9 @@ public class NUnitFramework : ITestFramework
 
             if (!double.TryParse(durationStr, System.Globalization.NumberStyles.Any,
                 System.Globalization.CultureInfo.InvariantCulture, out var durationSecs))
+            {
                 durationSecs = 0;
+            }
 
             var duration = TimeSpan.FromSeconds(durationSecs);
 

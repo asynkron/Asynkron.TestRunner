@@ -110,7 +110,9 @@ public class WorkerProcess : IAsyncDisposable
 
             // Stop after completion or error
             if (message is RunCompletedEvent or ErrorEvent)
+            {
                 break;
+            }
         }
     }
 
@@ -124,10 +126,14 @@ public class WorkerProcess : IAsyncDisposable
         await foreach (var msg in ReadEventsAsync(ct))
         {
             if (msg is DiscoveredEvent discovered)
+            {
                 return discovered.Tests;
+            }
 
             if (msg is ErrorEvent error)
+            {
                 throw new Exception($"Worker error: {error.Message}");
+            }
         }
 
         return [];
@@ -150,7 +156,9 @@ public class WorkerProcess : IAsyncDisposable
 
             // Stop after run completes
             if (msg is RunCompletedEvent)
+            {
                 yield break;
+            }
         }
     }
 
@@ -179,14 +187,18 @@ public class WorkerProcess : IAsyncDisposable
         var workerDll = Path.Combine(assemblyDir, "testrunner-worker.dll");
 
         if (File.Exists(workerDll))
+        {
             return workerDll;
+        }
 
         // Look in sibling Worker directory (dev scenario)
         var devPath = Path.Combine(assemblyDir, "..", "..", "..", "..",
             "Asynkron.TestRunner.Worker", "bin", "Debug", "net10.0", "testrunner-worker.dll");
 
         if (File.Exists(devPath))
+        {
             return Path.GetFullPath(devPath);
+        }
 
         throw new FileNotFoundException("Could not find testrunner-worker.dll");
     }
@@ -194,7 +206,9 @@ public class WorkerProcess : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         if (_disposed)
+        {
             return;
+        }
 
         _disposed = true;
 

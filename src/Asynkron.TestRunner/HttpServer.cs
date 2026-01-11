@@ -70,7 +70,7 @@ public class HttpServer
             var path = request.Url?.AbsolutePath ?? "/";
             var method = request.HttpMethod;
 
-            object? result = (path, method) switch
+            var result = (path, method) switch
             {
                 ("/discover", "POST") => await HandleDiscoverAsync(request),
                 ("/run", "POST") => await HandleRunAsync(request),
@@ -107,14 +107,16 @@ public class HttpServer
         }
     }
 
-    private async Task<object> HandleDiscoverAsync(HttpListenerRequest request)
+    private static async Task<object> HandleDiscoverAsync(HttpListenerRequest request)
     {
         using var reader = new StreamReader(request.InputStream);
         var body = await reader.ReadToEndAsync();
         var req = JsonSerializer.Deserialize<DiscoverRequest>(body);
 
         if (string.IsNullOrEmpty(req?.Assembly))
+        {
             return new { error = "Assembly path required" };
+        }
 
         var filter = TestFilter.Parse(req.Filter);
         var tests = await TestDiscovery.DiscoverTestsAsync([req.Assembly], filter);
@@ -134,7 +136,9 @@ public class HttpServer
         var req = JsonSerializer.Deserialize<RunRequest>(body);
 
         if (string.IsNullOrEmpty(req?.Assembly))
+        {
             return new { error = "Assembly path required" };
+        }
 
         // Cancel any existing run
         _runCts?.Cancel();
@@ -219,7 +223,9 @@ public class HttpServer
         lock (_statusLock)
         {
             if (_currentStatus == null)
+            {
                 return new { state = "idle" };
+            }
 
             // Compute live counts from _testResults
             var results = _testResults.Values.ToList();
@@ -246,7 +252,9 @@ public class HttpServer
     {
         var pattern = request.QueryString["pattern"];
         if (string.IsNullOrWhiteSpace(pattern))
+        {
             return new { error = "Pattern query parameter required (e.g., ?pattern=MyTest)" };
+        }
 
         // Find matching tests (case-insensitive contains)
         var matches = _testResults
@@ -255,7 +263,9 @@ public class HttpServer
             .ToList();
 
         if (matches.Count == 0)
+        {
             return new { error = $"No tests found matching '{pattern}'", totalTests = _testResults.Count };
+        }
 
         return new
         {

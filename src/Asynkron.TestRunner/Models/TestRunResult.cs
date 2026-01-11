@@ -34,10 +34,12 @@ public class TestRunResult
     public List<string> GetRegressions(TestRunResult? previousRun)
     {
         if (previousRun == null)
+        {
             return [];
+        }
 
         var previousPassed = new HashSet<string>(previousRun.PassedTests);
-        return FailedTests.Where(t => previousPassed.Contains(t)).ToList();
+        return FailedTests.Where(previousPassed.Contains).ToList();
     }
 
     /// <summary>
@@ -46,9 +48,11 @@ public class TestRunResult
     public List<string> GetFixes(TestRunResult? previousRun)
     {
         if (previousRun == null)
+        {
             return [];
+        }
 
         var previousFailed = new HashSet<string>(previousRun.FailedTests);
-        return PassedTests.Where(t => previousFailed.Contains(t)).ToList();
+        return PassedTests.Where(previousFailed.Contains).ToList();
     }
 }

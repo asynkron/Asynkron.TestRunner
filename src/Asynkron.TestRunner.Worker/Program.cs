@@ -47,7 +47,9 @@ static async Task RunWorkerAsync(
     {
         var message = await ProtocolIO.ReadAsync(input, ct);
         if (message == null)
+        {
             break;  // EOF
+        }
 
         try
         {

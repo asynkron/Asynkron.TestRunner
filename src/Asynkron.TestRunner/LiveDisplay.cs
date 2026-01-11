@@ -52,17 +52,26 @@ public class LiveDisplay
 
     public void SetTotal(int total)
     {
-        lock (_lock) _total = total;
+        lock (_lock)
+        {
+            _total = total;
+        }
     }
 
     public void SetFilter(string? filter)
     {
-        lock (_lock) _filter = filter;
+        lock (_lock)
+        {
+            _filter = filter;
+        }
     }
 
     public void SetAssembly(string assemblyPath)
     {
-        lock (_lock) _assemblyName = Path.GetFileNameWithoutExtension(assemblyPath);
+        lock (_lock)
+        {
+            _assemblyName = Path.GetFileNameWithoutExtension(assemblyPath);
+        }
     }
 
     public void SetWorkerCount(int count)
@@ -71,13 +80,18 @@ public class LiveDisplay
         {
             _workerCount = count;
             for (var i = 0; i < count; i++)
+            {
                 _workerStates[i] = new WorkerState();
+            }
         }
     }
 
     public void SetTimeout(int seconds)
     {
-        lock (_lock) _timeoutSeconds = seconds;
+        lock (_lock)
+        {
+            _timeoutSeconds = seconds;
+        }
     }
 
     public void SetQueueStats(int pendingCount, int suspiciousCount, int confirmedCount, int currentBatchSize)
@@ -108,7 +122,9 @@ public class LiveDisplay
         lock (_lock)
         {
             if (_workerStates.TryGetValue(workerIndex, out var state))
+            {
                 state.CompletedResults.Add(SlotStatus.Passed);
+            }
         }
     }
 
@@ -117,7 +133,9 @@ public class LiveDisplay
         lock (_lock)
         {
             if (_workerStates.TryGetValue(workerIndex, out var state))
+            {
                 state.CompletedResults.Add(SlotStatus.Failed);
+            }
         }
     }
 
@@ -126,7 +144,9 @@ public class LiveDisplay
         lock (_lock)
         {
             if (_workerStates.TryGetValue(workerIndex, out var state))
+            {
                 state.CompletedResults.Add(SlotStatus.Hanging);
+            }
         }
     }
 
@@ -135,7 +155,9 @@ public class LiveDisplay
         lock (_lock)
         {
             if (_workerStates.TryGetValue(workerIndex, out var state))
+            {
                 state.CompletedResults.Add(SlotStatus.Crashed);
+            }
         }
     }
 
@@ -156,7 +178,9 @@ public class LiveDisplay
         lock (_lock)
         {
             if (_workerStates.TryGetValue(workerIndex, out var state))
+            {
                 state.IsRestarting = true;
+            }
         }
     }
 
@@ -165,13 +189,18 @@ public class LiveDisplay
         lock (_lock)
         {
             if (_workerStates.TryGetValue(workerIndex, out var state))
+            {
                 state.IsComplete = true;
+            }
         }
     }
 
     public void TestStarted(string displayName)
     {
-        lock (_lock) _running[displayName] = DateTime.UtcNow;
+        lock (_lock)
+        {
+            _running[displayName] = DateTime.UtcNow;
+        }
     }
 
     /// <summary>
@@ -180,7 +209,10 @@ public class LiveDisplay
     /// </summary>
     public void TestRemoved(string displayName)
     {
-        lock (_lock) _running.Remove(displayName);
+        lock (_lock)
+        {
+            _running.Remove(displayName);
+        }
     }
 
     public void TestPassed(string displayName)
@@ -242,7 +274,6 @@ public class LiveDisplay
             _lastStatus = "[red]💥[/]";
         }
     }
-
 
     public IRenderable Render()
     {
@@ -320,7 +351,10 @@ public class LiveDisplay
 
     private IRenderable CreateProgressBar(int completed, int total)
     {
-        if (total == 0) return new Text("");
+        if (total == 0)
+        {
+            return new Text("");
+        }
 
         var barWidth = ContentWidth - 7; // Leave room for " 100 %"
         var percentage = Math.Min(1.0, (double)completed / total);
@@ -328,7 +362,9 @@ public class LiveDisplay
         // Use actual completion order, pad with pending for remaining tests
         var allResults = new List<SlotStatus>(_completionOrder);
         while (allResults.Count < total)
+        {
             allResults.Add(SlotStatus.Pending);
+        }
 
         // Use gradient heat map with half-block characters (2 pixels per char)
         var bar = RenderGradientHeatMap(allResults, total, barWidth);
@@ -363,7 +399,10 @@ public class LiveDisplay
         // Map pixel to range of tests
         var startIdx = (int)((double)pixelIdx / pixelCount * total);
         var endIdx = (int)((double)(pixelIdx + 1) / pixelCount * total);
-        if (endIdx <= startIdx) endIdx = startIdx + 1;
+        if (endIdx <= startIdx)
+        {
+            endIdx = startIdx + 1;
+        }
 
         // Count statuses in this range
         int passed = 0, failed = 0, hanging = 0, crashed = 0, pending = 0;
@@ -382,14 +421,23 @@ public class LiveDisplay
         pending += Math.Max(0, endIdx - results.Count);
 
         var rangeSize = endIdx - startIdx;
-        if (rangeSize == 0) return (40, 40, 40); // dim grey for empty
+        if (rangeSize == 0)
+        {
+            return (40, 40, 40); // dim grey for empty
+        }
 
         // If all pending, return dim
-        if (pending == rangeSize) return (60, 60, 60);
+        if (pending == rangeSize)
+        {
+            return (60, 60, 60);
+        }
 
         // Calculate ratios (excluding pending from the denominator)
         var completed = passed + failed + hanging + crashed;
-        if (completed == 0) return (60, 60, 60);
+        if (completed == 0)
+        {
+            return (60, 60, 60);
+        }
 
         var passRatio = (double)passed / completed;
         var failRatio = (double)failed / completed;
@@ -519,9 +567,15 @@ public class LiveDisplay
         // Show queue stats
         parts.Add($"[dim]|[/] [blue]{_pendingCount}[/] [dim]pending[/]");
         if (_suspiciousCount > 0)
+        {
             parts.Add($"[dim]|[/] [yellow]{_suspiciousCount}[/] [dim]suspect[/]");
+        }
+
         if (_confirmedCount > 0)
+        {
             parts.Add($"[dim]|[/] [red]{_confirmedCount}[/] [dim]confirmed[/]");
+        }
+
         parts.Add($"[dim]| batch={_currentBatchSize}[/]");
 
         return new Markup(string.Join(" ", parts));
@@ -529,7 +583,11 @@ public class LiveDisplay
 
     private static string Truncate(string text, int maxLength)
     {
-        if (text.Length <= maxLength) return text;
+        if (text.Length <= maxLength)
+        {
+            return text;
+        }
+
         return text[..(maxLength - 3)] + "...";
     }
 

@@ -86,7 +86,9 @@ public class TimeoutStrategy
     {
         var perTestTimeout = GetTimeout(attemptNumber);
         if (perTestTimeout == 0)
+        {
             return 0;
+        }
 
         // For batches, we use a formula that accounts for:
         // - Per-test timeout as a ceiling for any single test
@@ -104,11 +106,15 @@ public class TimeoutStrategy
     private int CalculateAdaptiveTimeout()
     {
         if (_store == null)
+        {
             return _baseTimeoutSeconds;
+        }
 
         var recentRuns = _store.GetRecentRuns(5);
         if (recentRuns.Count == 0)
+        {
             return _baseTimeoutSeconds;
+        }
 
         // Get the median duration per test
         var durations = recentRuns
@@ -118,7 +124,9 @@ public class TimeoutStrategy
             .ToList();
 
         if (durations.Count == 0)
+        {
             return _baseTimeoutSeconds;
+        }
 
         var medianDuration = durations[durations.Count / 2];
         var adaptiveTimeout = (int)(medianDuration * AdaptiveMultiplier);

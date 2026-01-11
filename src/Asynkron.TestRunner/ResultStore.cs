@@ -49,7 +49,10 @@ public class ResultStore
             while (dir != null)
             {
                 if (Directory.Exists(Path.Combine(dir, ".git")))
+                {
                     return dir;
+                }
+
                 dir = Directory.GetParent(dir)?.FullName;
             }
         }
@@ -68,7 +71,9 @@ public class ResultStore
     public List<TestRunResult> LoadHistory()
     {
         if (!File.Exists(_historyFilePath))
+        {
             return new List<TestRunResult>();
+        }
 
         try
         {
