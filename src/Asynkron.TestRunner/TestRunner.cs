@@ -748,11 +748,13 @@ public class TestRunner
 
         _store.SaveResult(result);
 
+        var regressions = new List<string>();
+        var fixes = new List<string>();
         var recentRuns = _store.GetRecentRuns(2);
         if (recentRuns.Count >= 2)
         {
             var previous = recentRuns[1];
-            var regressions = result.GetRegressions(previous);
+            regressions = result.GetRegressions(previous);
             if (regressions.Count > 0)
             {
                 Console.WriteLine();
@@ -763,11 +765,70 @@ public class TestRunner
                     AnsiConsole.MarkupLine($"  [dim]...and {regressions.Count - 5} more[/]");
             }
 
-            var fixes = result.GetFixes(previous);
+            fixes = result.GetFixes(previous);
             if (fixes.Count > 0)
             {
                 AnsiConsole.MarkupLine($"[green]✓ {fixes.Count} fix(es)![/]");
             }
+        }
+
+        var reportPath = WriteMarkdownReport(results, elapsed, regressions, fixes);
+        if (!string.IsNullOrEmpty(reportPath))
+        {
+            Console.WriteLine();
+            Console.WriteLine($"Full summary {reportPath}");
+        }
+    }
+
+    private string? WriteMarkdownReport(TestResults results, TimeSpan elapsed, IReadOnlyList<string> regressions, IReadOnlyList<string> fixes)
+    {
+        try
+        {
+            var reportPath = Path.Combine(_store.BaseFolder, "summary.md");
+            Directory.CreateDirectory(_store.BaseFolder);
+
+            var builder = new StringBuilder();
+            builder.AppendLine("# Test Runner Summary");
+            builder.AppendLine();
+            builder.AppendLine($"- Timestamp: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+            builder.AppendLine($"- Duration: {elapsed.TotalSeconds:F1}s");
+            builder.AppendLine($"- Passed: {results.Passed.Count}");
+            builder.AppendLine($"- Failed: {results.Failed.Count}");
+            builder.AppendLine($"- Skipped: {results.Skipped.Count}");
+            builder.AppendLine($"- Hanging: {results.Hanging.Count}");
+            builder.AppendLine($"- Crashed: {results.Crashed.Count}");
+
+            AppendSection(builder, "Failed", results.Failed);
+            AppendSection(builder, "Skipped", results.Skipped);
+            AppendSection(builder, "Hanging", results.Hanging);
+            AppendSection(builder, "Crashed", results.Crashed);
+            AppendSection(builder, "Regressions", regressions);
+            AppendSection(builder, "Fixes", fixes);
+
+            File.WriteAllText(reportPath, builder.ToString());
+            return reportPath;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static void AppendSection(StringBuilder builder, string title, IEnumerable<string> items)
+    {
+        var list = items.OrderBy(item => item).ToList();
+        builder.AppendLine();
+        builder.AppendLine($"## {title} ({list.Count})");
+        if (list.Count == 0)
+        {
+            builder.AppendLine();
+            builder.AppendLine("None");
+            return;
+        }
+
+        foreach (var item in list)
+        {
+            builder.AppendLine($"- {item}");
         }
     }
 
