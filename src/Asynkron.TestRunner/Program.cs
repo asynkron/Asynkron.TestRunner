@@ -94,8 +94,8 @@ static async Task<int> HandleRunAsync(string[] args)
 
     if (assemblyPaths.Count == 0)
     {
-        Console.WriteLine("Error: No test assembly paths provided.");
-        Console.WriteLine("Usage: testrunner run <assembly.dll> [assembly2.dll...] [--filter pattern]");
+        Console.WriteLine("Error: No test assemblies or projects provided.");
+        Console.WriteLine("Usage: testrunner run <assembly.dll|project.csproj> [--filter pattern]");
         return 1;
     }
 
@@ -230,8 +230,8 @@ static async Task<int> HandleListAsync(string[] args)
 
     if (assemblyPaths.Count == 0)
     {
-        Console.WriteLine("Error: No test assembly paths provided.");
-        Console.WriteLine("Usage: testrunner list <assembly.dll> [--filter pattern]");
+        Console.WriteLine("Error: No test assemblies or projects provided.");
+        Console.WriteLine("Usage: testrunner list <assembly.dll|project.csproj> [--filter pattern]");
         return 1;
     }
 
@@ -255,8 +255,8 @@ static async Task<int> HandleTreeAsync(string[] args)
 
     if (assemblyPaths.Count == 0)
     {
-        Console.WriteLine("Error: No test assembly paths provided.");
-        Console.WriteLine("Usage: testrunner tree <assembly.dll> [--output file.md] [--filter pattern]");
+        Console.WriteLine("Error: No test assemblies or projects provided.");
+        Console.WriteLine("Usage: testrunner tree <assembly.dll|project.csproj> [--output file.md] [--filter pattern]");
         return 1;
     }
 
@@ -358,11 +358,132 @@ static string? ParseOutput(string[] args)
 
 static List<string> ExtractAssemblyPaths(string[] args)
 {
-    return args
-        .Where(a => a.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) && !a.StartsWith("-"))
-        .Select(ExpandPath)
-        .Where(File.Exists)
-        .ToList();
+    var paths = new List<string>();
+
+    foreach (var arg in args)
+    {
+        if (arg.StartsWith("-"))
+        {
+            continue;
+        }
+
+        var expandedPath = ExpandPath(arg);
+
+        // Handle .csproj files - build them first
+        if (arg.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!File.Exists(expandedPath))
+            {
+                Console.WriteLine($"Warning: Project file not found: {expandedPath}");
+                continue;
+            }
+
+            var dllPath = BuildProject(expandedPath);
+            if (dllPath != null)
+            {
+                paths.Add(dllPath);
+            }
+            continue;
+        }
+
+        // Handle .dll files directly
+        if (arg.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+        {
+            if (File.Exists(expandedPath))
+            {
+                paths.Add(expandedPath);
+            }
+            else
+            {
+                Console.WriteLine($"Warning: Assembly not found: {expandedPath}");
+            }
+        }
+    }
+
+    return paths;
+}
+
+static string? BuildProject(string csprojPath)
+{
+    Console.WriteLine($"Building project: {Path.GetFileName(csprojPath)}");
+
+    var startInfo = new System.Diagnostics.ProcessStartInfo
+    {
+        FileName = "dotnet",
+        Arguments = $"build \"{csprojPath}\" -c Release --nologo",
+        RedirectStandardOutput = true,
+        RedirectStandardError = true,
+        UseShellExecute = false,
+        CreateNoWindow = true
+    };
+
+    try
+    {
+        using var process = System.Diagnostics.Process.Start(startInfo);
+        if (process == null)
+        {
+            Console.WriteLine("Error: Failed to start dotnet build process");
+            return null;
+        }
+
+        var output = process.StandardOutput.ReadToEnd();
+        var error = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+
+        if (process.ExitCode != 0)
+        {
+            Console.WriteLine($"Error: Build failed with exit code {process.ExitCode}");
+            if (!string.IsNullOrWhiteSpace(error))
+            {
+                Console.WriteLine(error);
+            }
+            return null;
+        }
+
+        // Find the output DLL
+        var projectDir = Path.GetDirectoryName(csprojPath);
+        var projectName = Path.GetFileNameWithoutExtension(csprojPath);
+
+        if (projectDir == null)
+        {
+            Console.WriteLine("Error: Could not determine project directory");
+            return null;
+        }
+
+        // Search for the DLL in bin/Release/net*/
+        var binReleasePath = Path.Combine(projectDir, "bin", "Release");
+        if (!Directory.Exists(binReleasePath))
+        {
+            Console.WriteLine($"Error: Release output directory not found: {binReleasePath}");
+            return null;
+        }
+
+        // Find all target framework directories
+        var tfmDirs = Directory.GetDirectories(binReleasePath, "net*");
+        if (tfmDirs.Length == 0)
+        {
+            Console.WriteLine($"Error: No target framework directories found in {binReleasePath}");
+            return null;
+        }
+
+        // Try to find the DLL in the first (or latest) target framework directory
+        var tfmDir = tfmDirs.OrderByDescending(d => d).First();
+        var dllPath = Path.Combine(tfmDir, $"{projectName}.dll");
+
+        if (!File.Exists(dllPath))
+        {
+            Console.WriteLine($"Error: Output DLL not found: {dllPath}");
+            return null;
+        }
+
+        Console.WriteLine($"Built successfully: {dllPath}");
+        return dllPath;
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"Error building project: {ex.Message}");
+        return null;
+    }
 }
 
 static string ExpandPath(string path)
@@ -456,8 +577,8 @@ static void PrintUsage()
         testrunner - Native .NET Test Runner
 
         Usage:
-          testrunner run <assembly.dll> [options]        Run tests in assembly
-          testrunner list <assembly.dll> [options]       List tests without running
+          testrunner run <path> [options]                Run tests (.dll or .csproj)
+          testrunner list <path> [options]               List tests without running
           testrunner serve [--port N]                    Start HTTP server with UI (for MCP)
           testrunner mcp [--port N]                      Start MCP server (connects to serve)
           testrunner stats                               Show test history
@@ -465,7 +586,7 @@ static void PrintUsage()
           testrunner clear                               Clear test history
 
         Options:
-          -f, --filter <pattern>       Filter tests by pattern (Class=Foo, Method=Bar)
+          -f, --filter <pattern>       Filter tests by pattern (or simple substring)
           -t, --timeout <seconds>      Per-test timeout (default: 30s)
           -w, --workers [N]            Run N worker processes in parallel (default: 1)
           -q, --quiet                  Suppress verbose output
@@ -477,11 +598,13 @@ static void PrintUsage()
 
         Examples:
           testrunner run ./bin/Release/net8.0/MyTests.dll
+          testrunner run MyTests.csproj --console --filter "UserTests"
           testrunner run MyTests.dll --filter "Class=UserTests"
-          testrunner list MyTests.dll --filter "Method=Should"
+          testrunner list MyTests.csproj --filter "Should"
 
-        Native Runner:
-          This runner executes xUnit and NUnit tests directly without vstest.
-          Tests are run in isolated worker processes for stability.
+        Features:
+          - Supports .dll and .csproj files (.csproj builds in Release mode)
+          - Executes xUnit and NUnit tests in isolated worker processes
+          - Simple substring filtering or structured filters (Class=, Method=, etc.)
         """);
 }
