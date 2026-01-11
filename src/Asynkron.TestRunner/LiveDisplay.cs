@@ -495,15 +495,20 @@ public class LiveDisplay
             {
                 var (test, startTime) = runningList[i];
                 var age = (now - startTime).TotalSeconds;
-                var spinner = SpinnerFrames[(baseFrame + i) % SpinnerFrames.Length];
 
                 // Smooth color fade from dim gray to red based on timeout progress
                 var ratio = Math.Clamp(age / _timeoutSeconds, 0, 1);
                 var (r, g, b) = Mix((128, 128, 128), (255, 60, 60), ratio);
                 var color = $"rgb({r},{g},{b})";
 
+                // Over 50% of timeout: show hourglass instead of spinner
+                var inTimeout = ratio > 0.5;
+                var statusIcon = inTimeout ? "⏳" : $"[cyan]{SpinnerFrames[(baseFrame + i) % SpinnerFrames.Length]}[/]";
+
+                // Emoji is 2 chars wide, adjust truncation accordingly
+                var textWidthAdjustment = inTimeout ? 7 : 5; // Emoji takes 2 chars instead of 1
                 var ageStr = age >= 1 ? $" [{color}]{age:F0}s[/]" : "";
-                lines.Add(new Markup($"[cyan]{spinner}[/] [{color}]{Markup.Escape(Truncate(test, textWidth - 5))}{ageStr}[/]"));
+                lines.Add(new Markup($"{statusIcon} [{color}]{Markup.Escape(Truncate(test, textWidth - textWidthAdjustment))}{ageStr}[/]"));
             }
 
             if (_running.Count > maxRunningLines)
