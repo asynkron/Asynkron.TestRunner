@@ -10,7 +10,7 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>testrunner</ToolCommandName>
     <PackageId>Asynkron.TestRunner</PackageId>
-    <Version>0.6.0</Version>
+    <Version>0.8.0</Version>
     <Authors>Asynkron</Authors>
     <Description>A native .NET test runner for xUnit and NUnit with test history tracking and regression detection.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
