@@ -87,7 +87,7 @@ static async Task<int> HandleRunAsync(string[] args)
     var hangTimeout = ParseHangTimeout(args);
     var quiet = ParseQuiet(args);
     var streamingConsole = ParseConsole(args);
-    var workers = ParseWorkers(args) ?? 1;
+    var workers = ParseWorkers(args) ?? 4;
     var verbose = ParseVerbose(args);
     var logFile = ParseLogFile(args);
     var resumeEnabled = ParseResume(args, out var resumeFile);
@@ -588,7 +588,7 @@ static void PrintUsage()
         Options:
           -f, --filter <pattern>       Filter tests by pattern (or simple substring)
           -t, --timeout <seconds>      Per-test timeout (default: 30s)
-          -w, --workers [N]            Run N worker processes in parallel (default: 1)
+          -w, --workers [N]            Run N worker processes in parallel (default: 4; flag alone uses CPU count)
           -q, --quiet                  Suppress verbose output
           -c, --console                Streaming console mode (no interactive UI)
           -v, --verbose                Show diagnostic logs on stderr
