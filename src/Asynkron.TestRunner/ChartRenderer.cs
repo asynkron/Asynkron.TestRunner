@@ -1,7 +1,103 @@
 using System.Globalization;
 using Asynkron.TestRunner.Models;
+using Spectre.Console;
 
 namespace Asynkron.TestRunner;
+
+internal static class HeatMapRenderer
+{
+    public static string RenderGradientHeatMap(List<SlotStatus> results, int total, int barWidth)
+    {
+        var bar = new System.Text.StringBuilder();
+        var pixelCount = barWidth * 2; // 2 horizontal pixels per character
+
+        for (var i = 0; i < barWidth; i++)
+        {
+            // Calculate colors for left and right pixels
+            var leftPixelIdx = i * 2;
+            var rightPixelIdx = i * 2 + 1;
+
+            var leftColor = CalculatePixelColor(results, total, leftPixelIdx, pixelCount);
+            var rightColor = CalculatePixelColor(results, total, rightPixelIdx, pixelCount);
+
+            // Use right half block: ▐
+            // Background = left color, Foreground = right color
+            bar.Append(CultureInfo.InvariantCulture, $"[rgb({rightColor.R},{rightColor.G},{rightColor.B}) on rgb({leftColor.R},{leftColor.G},{leftColor.B})]▐[/]");
+        }
+
+        return bar.ToString();
+    }
+
+    private static (int R, int G, int B) CalculatePixelColor(List<SlotStatus> results, int total, int pixelIdx, int pixelCount)
+    {
+        // Map pixel to range of tests
+        var startIdx = (int)((double)pixelIdx / pixelCount * total);
+        var endIdx = (int)((double)(pixelIdx + 1) / pixelCount * total);
+        if (endIdx <= startIdx)
+        {
+            endIdx = startIdx + 1;
+        }
+
+        // Count statuses in this range
+        int passed = 0, failed = 0, hanging = 0, crashed = 0, pending = 0;
+        for (var j = startIdx; j < endIdx && j < results.Count; j++)
+        {
+            switch (results[j])
+            {
+                case SlotStatus.Passed: passed++; break;
+                case SlotStatus.Failed: failed++; break;
+                case SlotStatus.Hanging: hanging++; break;
+                case SlotStatus.Crashed: crashed++; break;
+                default: pending++; break;
+            }
+        }
+        // Count any indices beyond results as pending
+        pending += Math.Max(0, endIdx - results.Count);
+
+        var rangeSize = endIdx - startIdx;
+        if (rangeSize == 0)
+        {
+            return (40, 40, 40); // dim grey for empty
+        }
+
+        // If all pending, return dim
+        if (pending == rangeSize)
+        {
+            return (60, 60, 60);
+        }
+
+        // Calculate ratios (excluding pending from the denominator)
+        var completed = passed + failed + hanging + crashed;
+        if (completed == 0)
+        {
+            return (60, 60, 60);
+        }
+
+        var passRatio = (double)passed / completed;
+        var failRatio = (double)failed / completed;
+        var crashRatio = (double)crashed / completed;
+        var hangRatio = (double)hanging / completed;
+
+        // Base color: interpolate green (pass) to red (fail)
+        // Green: (0, 200, 0), Red: (200, 0, 0)
+        var r = (int)(failRatio * 220 + crashRatio * 180);
+        var g = (int)(passRatio * 220);
+        var b = (int)(crashRatio * 200 + hangRatio * 150); // Blue tint for crashes/hangs
+
+        // Clamp values
+        r = Math.Clamp(r, 0, 255);
+        g = Math.Clamp(g, 0, 255);
+        b = Math.Clamp(b, 0, 255);
+
+        // Boost minimum brightness if we have results
+        if (r < 40 && g < 40 && b < 40)
+        {
+            r = g = b = 60;
+        }
+
+        return (r, g, b);
+    }
+}
 
 public static class ChartRenderer
 {
@@ -19,11 +115,6 @@ public static class ChartRenderer
     private static string Dim => UseColor ? "\x1b[2m" : "";
     private static string Bold => UseColor ? "\x1b[1m" : "";
 
-    // Bar characters - use distinct chars when no color
-    private static char PassedChar => UseColor ? '█' : '=';
-    private static char FailedChar => UseColor ? '█' : 'X';
-    private static char SkippedChar => UseColor ? '░' : '-';
-    private static char EmptyChar => UseColor ? '░' : '.';
 
     private static bool DetectColorSupport()
     {
@@ -68,15 +159,13 @@ public static class ChartRenderer
             ? results.OrderByDescending(r => r.Timestamp).ToList()
             : results.OrderBy(r => r.Timestamp).ToList();
 
-        var maxTotal = ordered.Max(r => r.Total);
-
         Console.WriteLine();
         Console.WriteLine($"{Bold}Test History ({results.Count} runs){Reset}");
         Console.WriteLine(new string('─', 70));
 
         foreach (var result in ordered)
         {
-            RenderBar(result, maxTotal);
+            RenderBar(result);
         }
 
         Console.WriteLine();
@@ -132,6 +221,29 @@ public static class ChartRenderer
         Console.WriteLine();
     }
 
+    public static void RenderFooterSummary(
+        int passed,
+        int failed,
+        int skipped,
+        int hanging,
+        int crashed,
+        TimeSpan elapsed)
+    {
+        var passColor = passed > 0 ? Green : Dim;
+        var failColor = failed > 0 ? Red : Dim;
+        var skipColor = skipped > 0 ? Yellow : Dim;
+        var hangColor = hanging > 0 ? Red : Dim;
+        var crashColor = crashed > 0 ? Red : Dim;
+
+        Console.WriteLine(
+            $"{passColor}{passed} passed{Reset}, " +
+            $"{failColor}{failed} failed{Reset}, " +
+            $"{skipColor}{skipped} skipped{Reset}, " +
+            $"{hangColor}{hanging} hanging{Reset}, " +
+            $"{crashColor}{crashed} crashed{Reset} " +
+            $"{Dim}({elapsed.TotalSeconds:F1}s){Reset}");
+    }
+
     public static void RenderRegressions(TestRunResult current, TestRunResult previous)
     {
         var regressions = current.GetRegressions(previous);
@@ -166,34 +278,60 @@ public static class ChartRenderer
         }
     }
 
-    private static void RenderBar(TestRunResult result, int maxTotal)
+    public static void RenderFlakyTests(IReadOnlyList<string> flakyTests, int historyCount)
     {
-        var timestamp = result.Timestamp.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
-        var passedWidth = maxTotal > 0 ? (int)((double)result.Passed / maxTotal * BarWidth) : 0;
-        var failedWidth = maxTotal > 0 ? (int)((double)result.Failed / maxTotal * BarWidth) : 0;
-        var skippedWidth = maxTotal > 0 ? (int)((double)result.Skipped / maxTotal * BarWidth) : 0;
-
-        // Ensure at least 1 char for failed if there are failures
-        if (result.Failed > 0 && failedWidth == 0)
+        if (flakyTests.Count == 0)
         {
-            failedWidth = 1;
+            return;
         }
 
-        var passedBar = new string(PassedChar, passedWidth);
-        var failedBar = new string(FailedChar, failedWidth);
-        var skippedBar = new string(SkippedChar, skippedWidth);
-        var emptyWidth = Math.Max(0, BarWidth - passedWidth - failedWidth - skippedWidth);
-        var emptyBar = new string(EmptyChar, emptyWidth);
+        Console.WriteLine();
+        Console.WriteLine($"{Yellow}{Bold}Flaky (last {historyCount} runs) ({flakyTests.Count}):{Reset}");
+        foreach (var test in flakyTests.Take(20))
+        {
+            Console.WriteLine($"  {Yellow}≈{Reset} {test}");
+        }
+        if (flakyTests.Count > 20)
+        {
+            Console.WriteLine($"  {Dim}... and {flakyTests.Count - 20} more{Reset}");
+        }
+    }
+
+    private static List<SlotStatus> BuildFallbackSlots(TestRunResult result)
+    {
+        var slots = new List<SlotStatus>(result.Total + result.TimedOutTests.Count);
+        if (result.Passed + result.Skipped > 0)
+        {
+            slots.AddRange(Enumerable.Repeat(SlotStatus.Passed, result.Passed + result.Skipped));
+        }
+        if (result.Failed > 0)
+        {
+            slots.AddRange(Enumerable.Repeat(SlotStatus.Failed, result.Failed));
+        }
+        if (result.TimedOutTests.Count > 0)
+        {
+            slots.AddRange(Enumerable.Repeat(SlotStatus.Hanging, result.TimedOutTests.Count));
+        }
+
+        return slots;
+    }
+
+    private static void RenderBar(TestRunResult result)
+    {
+        var timestamp = result.Timestamp.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+        var total = result.Passed + result.Failed + result.Skipped + result.TimedOutTests.Count;
+        var slots = result.CompletionOrder.Count > 0
+            ? new List<SlotStatus>(result.CompletionOrder)
+            : BuildFallbackSlots(result);
+
+        var heatMap = HeatMapRenderer.RenderGradientHeatMap(slots, Math.Max(total, slots.Count), BarWidth);
 
         var failedIndicator = result.Failed > 0
             ? $"{Red}✗{result.Failed}{Reset}"
             : $"{Green}✓{Reset}";
 
         Console.Write($"{Dim}{timestamp}{Reset}  ");
-        Console.Write($"{Green}{passedBar}{Reset}");
-        Console.Write($"{Red}{failedBar}{Reset}");
-        Console.Write($"{Yellow}{skippedBar}{Reset}");
-        Console.Write($"{Dim}{emptyBar}{Reset}");
+        AnsiConsole.Markup(heatMap);
         Console.Write($"  {result.Passed}/{result.Total} ({result.PassRate:F1}%)  ");
         Console.WriteLine(failedIndicator);
     }

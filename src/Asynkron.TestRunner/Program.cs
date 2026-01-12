@@ -1,18 +1,33 @@
+using System.Runtime.InteropServices;
 using Asynkron.TestRunner;
 
-// Handle Ctrl+C to kill worker processes
-Console.CancelKeyPress += (_, _) =>
-{
-    WorkerProcess.KillAll();
-    Environment.Exit(130); // Standard exit code for Ctrl+C
-};
-
-AppDomain.CurrentDomain.ProcessExit += (_, _) =>
-{
-    WorkerProcess.KillAll();
-};
+var signalRegistrations = RegisterShutdownHandlers();
 
 return await RunAsync(args);
+
+static List<PosixSignalRegistration> RegisterShutdownHandlers()
+{
+    // Handle Ctrl+C to kill worker processes
+    Console.CancelKeyPress += (_, _) =>
+    {
+        WorkerProcess.KillAll();
+        Environment.Exit(130); // Standard exit code for Ctrl+C
+    };
+
+    AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+    {
+        WorkerProcess.KillAll();
+    };
+
+    var registrations = new List<PosixSignalRegistration>();
+    if (!OperatingSystem.IsWindows())
+    {
+        registrations.Add(PosixSignalRegistration.Create(PosixSignal.SIGTERM, _ => WorkerProcess.KillAll()));
+        registrations.Add(PosixSignalRegistration.Create(PosixSignal.SIGQUIT, _ => WorkerProcess.KillAll()));
+    }
+
+    return registrations;
+}
 
 static async Task<int> RunAsync(string[] args)
 {

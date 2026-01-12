@@ -94,23 +94,23 @@ public class TestRunner
             switch (entry.Status)
             {
                 case "passed":
-                    results.Passed.Add(entry.Test);
+                    results.AddPassed(entry.Test);
                     display?.TestPassed(displayName);
                     break;
                 case "failed":
-                    results.Failed.Add(entry.Test);
+                    results.AddFailed(entry.Test);
                     display?.TestFailed(displayName);
                     break;
                 case "skipped":
-                    results.Skipped.Add(entry.Test);
+                    results.AddSkipped(entry.Test);
                     display?.TestSkipped(displayName);
                     break;
                 case "hanging":
-                    results.Hanging.Add(entry.Test);
+                    results.AddHanging(entry.Test);
                     display?.TestHanging(displayName);
                     break;
                 case "crashed":
-                    results.Crashed.Add(entry.Test);
+                    results.AddCrashed(entry.Test);
                     display?.TestCrashed(displayName);
                     break;
             }
@@ -412,7 +412,7 @@ public class TestRunner
                             queue.TestHanging(workerIndex, fqn);
                             lock (results)
                             {
-                                results.Hanging.Add(fqn);
+                                results.AddHanging(fqn);
                             }
 
                             var displayName = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
@@ -458,7 +458,7 @@ public class TestRunner
                             completedInBatch++;
                             lock (results)
                             {
-                                results.Passed.Add(testPassed.FullyQualifiedName);
+                                results.AddPassed(testPassed.FullyQualifiedName);
                             }
 
                             display.TestPassed(testPassed.DisplayName);
@@ -479,7 +479,7 @@ public class TestRunner
                             completedInBatch++;
                             lock (results)
                             {
-                                results.Failed.Add(testFailed.FullyQualifiedName);
+                                results.AddFailed(testFailed.FullyQualifiedName);
                             }
 
                             display.TestFailed(testFailed.DisplayName);
@@ -507,7 +507,7 @@ public class TestRunner
                             completedInBatch++;
                             lock (results)
                             {
-                                results.Skipped.Add(testSkipped.FullyQualifiedName);
+                                results.AddSkipped(testSkipped.FullyQualifiedName);
                             }
 
                             display.TestSkipped(testSkipped.DisplayName);
@@ -529,7 +529,7 @@ public class TestRunner
                                 queue.TestCompleted(workerIndex, fqn);
                                 lock (results)
                                 {
-                                    results.Crashed.Add(fqn);
+                                    results.AddCrashed(fqn);
                                 }
 
                                 var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
@@ -565,7 +565,7 @@ public class TestRunner
                             queue.TestCompleted(workerIndex, fqn);
                             lock (results)
                             {
-                                results.Crashed.Add(fqn);
+                                results.AddCrashed(fqn);
                             }
 
                             var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
@@ -686,14 +686,14 @@ public class TestRunner
                         case TestPassedEvent testPassed:
                             running.Remove(testPassed.FullyQualifiedName);
                             pending.Remove(testPassed.FullyQualifiedName);
-                            results.Passed.Add(testPassed.FullyQualifiedName);
+                            results.AddPassed(testPassed.FullyQualifiedName);
                             MarkResume(resumeTracker, "passed", testPassed.FullyQualifiedName, testPassed.DisplayName);
                             break;
 
                         case TestFailedEvent testFailed:
                             running.Remove(testFailed.FullyQualifiedName);
                             pending.Remove(testFailed.FullyQualifiedName);
-                            results.Failed.Add(testFailed.FullyQualifiedName);
+                            results.AddFailed(testFailed.FullyQualifiedName);
                             MarkResume(resumeTracker, "failed", testFailed.FullyQualifiedName, testFailed.DisplayName);
                             AnsiConsole.MarkupLine($"[red]  ✗[/] {EscapeMarkup(testFailed.DisplayName)}");
                             break;
@@ -701,7 +701,7 @@ public class TestRunner
                         case TestSkippedEvent testSkipped:
                             running.Remove(testSkipped.FullyQualifiedName);
                             pending.Remove(testSkipped.FullyQualifiedName);
-                            results.Skipped.Add(testSkipped.FullyQualifiedName);
+                            results.AddSkipped(testSkipped.FullyQualifiedName);
                             MarkResume(resumeTracker, "skipped", testSkipped.FullyQualifiedName, testSkipped.DisplayName);
                             break;
 
@@ -711,7 +711,7 @@ public class TestRunner
                             {
                                 running.Remove(fqn);
                                 pending.Remove(fqn);
-                                results.Crashed.Add(fqn);
+                                results.AddCrashed(fqn);
                                 MarkResume(resumeTracker, "crashed", fqn, fqn);
                                 AnsiConsole.MarkupLine($"[red]  💥[/] {fqn} [red](NO RESULT)[/]");
                             }
@@ -727,7 +727,7 @@ public class TestRunner
                 foreach (var fqn in running)
                 {
                     pending.Remove(fqn);
-                    results.Hanging.Add(fqn);
+                    results.AddHanging(fqn);
                     MarkResume(resumeTracker, "hanging", fqn, fqn);
                     AnsiConsole.MarkupLine($"[red]  ⏱[/] {fqn} [red](HANGING)[/]");
                 }
@@ -738,7 +738,7 @@ public class TestRunner
                 foreach (var fqn in running)
                 {
                     pending.Remove(fqn);
-                    results.Crashed.Add(fqn);
+                    results.AddCrashed(fqn);
                     MarkResume(resumeTracker, "crashed", fqn, fqn);
                     AnsiConsole.MarkupLine($"[red]  💥[/] {fqn} [red](CRASHED: {ex.ExitCode})[/]");
                 }
@@ -794,7 +794,7 @@ public class TestRunner
                         case TestPassedEvent testPassed:
                             running.Remove(testPassed.FullyQualifiedName);
                             pending.Remove(testPassed.FullyQualifiedName);
-                            results.Passed.Add(testPassed.FullyQualifiedName);
+                            results.AddPassed(testPassed.FullyQualifiedName);
                             MarkResume(resumeTracker, "passed", testPassed.FullyQualifiedName, testPassed.DisplayName);
                             Console.WriteLine($"\x1b[92m{"[PASSED]",-10}\x1b[0m {testPassed.DisplayName} ({testPassed.DurationMs:F0}ms)");
                             break;
@@ -802,7 +802,7 @@ public class TestRunner
                         case TestFailedEvent testFailed:
                             running.Remove(testFailed.FullyQualifiedName);
                             pending.Remove(testFailed.FullyQualifiedName);
-                            results.Failed.Add(testFailed.FullyQualifiedName);
+                            results.AddFailed(testFailed.FullyQualifiedName);
                             MarkResume(resumeTracker, "failed", testFailed.FullyQualifiedName, testFailed.DisplayName);
                             Console.WriteLine($"\x1b[91m{"[FAILED]",-10}\x1b[0m {testFailed.DisplayName}");
                             break;
@@ -810,7 +810,7 @@ public class TestRunner
                         case TestSkippedEvent testSkipped:
                             running.Remove(testSkipped.FullyQualifiedName);
                             pending.Remove(testSkipped.FullyQualifiedName);
-                            results.Skipped.Add(testSkipped.FullyQualifiedName);
+                            results.AddSkipped(testSkipped.FullyQualifiedName);
                             MarkResume(resumeTracker, "skipped", testSkipped.FullyQualifiedName, testSkipped.DisplayName);
                             Console.WriteLine($"\x1b[93m{"[SKIPPED]",-10}\x1b[0m {testSkipped.DisplayName}");
                             break;
@@ -821,7 +821,7 @@ public class TestRunner
                             {
                                 running.Remove(fqn);
                                 pending.Remove(fqn);
-                                results.Crashed.Add(fqn);
+                                results.AddCrashed(fqn);
                                 MarkResume(resumeTracker, "crashed", fqn, fqn);
                                 Console.WriteLine($"\x1b[91m{"[CRASHED]",-10}\x1b[0m {fqn}");
                             }
@@ -837,7 +837,7 @@ public class TestRunner
                 foreach (var fqn in running)
                 {
                     pending.Remove(fqn);
-                    results.Hanging.Add(fqn);
+                    results.AddHanging(fqn);
                     MarkResume(resumeTracker, "hanging", fqn, fqn);
                     Console.WriteLine($"\x1b[93m{"[HANGING]",-10}\x1b[0m {fqn}");
                 }
@@ -848,7 +848,7 @@ public class TestRunner
                 foreach (var fqn in running)
                 {
                     pending.Remove(fqn);
-                    results.Crashed.Add(fqn);
+                    results.AddCrashed(fqn);
                     MarkResume(resumeTracker, "crashed", fqn, fqn);
                     Console.WriteLine($"\x1b[91m{"[CRASHED]",-10}\x1b[0m {fqn}");
                 }
@@ -865,20 +865,13 @@ public class TestRunner
     {
         Console.WriteLine();
 
-        var passColor = results.Passed.Count > 0 ? "green" : "dim";
-        var failColor = results.Failed.Count > 0 ? "red" : "dim";
-        var skipColor = results.Skipped.Count > 0 ? "yellow" : "dim";
-        var hangColor = results.Hanging.Count > 0 ? "red" : "dim";
-        var crashColor = results.Crashed.Count > 0 ? "red" : "dim";
-
-        AnsiConsole.MarkupLine(
-            $"[{passColor}]{results.Passed.Count} passed[/], " +
-            $"[{failColor}]{results.Failed.Count} failed[/], " +
-            $"[{skipColor}]{results.Skipped.Count} skipped[/], " +
-            $"[{hangColor}]{results.Hanging.Count} hanging[/], " +
-            $"[{crashColor}]{results.Crashed.Count} crashed[/] " +
-            $"[dim]({elapsed.TotalSeconds:F1}s)[/]");
-
+        ChartRenderer.RenderFooterSummary(
+            results.Passed.Count,
+            results.Failed.Count,
+            results.Skipped.Count,
+            results.Hanging.Count,
+            results.Crashed.Count,
+            elapsed);
         if (results.Hanging.Count > 0)
         {
             Console.WriteLine();
@@ -922,49 +915,51 @@ public class TestRunner
             Duration = elapsed,
             PassedTests = results.Passed.ToList(),
             FailedTests = results.Failed.ToList(),
-            TimedOutTests = results.Hanging.Concat(results.Crashed).ToList()
+            TimedOutTests = results.Hanging.Concat(results.Crashed).ToList(),
+            CompletionOrder = results.CompletionOrder.ToList()
         };
 
         _store.SaveResult(result);
 
         var regressions = new List<string>();
         var fixes = new List<string>();
-        var recentRuns = _store.GetRecentRuns(2);
+        var flakyTests = new List<string>();
+        const int flakyHistoryCount = 5;
+        const int historyChartCount = 10;
+        var recentRuns = _store.GetRecentRuns(historyChartCount);
+        var flakyRuns = recentRuns.Take(flakyHistoryCount).ToList();
         if (recentRuns.Count >= 2)
         {
             var previous = recentRuns[1];
             regressions = result.GetRegressions(previous);
-            if (regressions.Count > 0)
-            {
-                Console.WriteLine();
-                AnsiConsole.MarkupLine($"[red]⚠ {regressions.Count} regression(s) detected![/]");
-                foreach (var reg in regressions.Take(5))
-                {
-                    AnsiConsole.MarkupLine($"  [red]→[/] {reg}");
-                }
-
-                if (regressions.Count > 5)
-                {
-                    AnsiConsole.MarkupLine($"  [dim]...and {regressions.Count - 5} more[/]");
-                }
-            }
-
             fixes = result.GetFixes(previous);
-            if (fixes.Count > 0)
-            {
-                AnsiConsole.MarkupLine($"[green]✓ {fixes.Count} fix(es)![/]");
-            }
         }
 
-        var reportPath = WriteMarkdownReport(results, elapsed, regressions, fixes);
+        flakyTests = TestRunResult.GetFlakyTests(flakyRuns);
+
+        var reportPath = WriteMarkdownReport(results, elapsed, regressions, fixes, flakyTests, flakyRuns.Count);
         if (!string.IsNullOrEmpty(reportPath))
         {
             Console.WriteLine();
             Console.WriteLine($"Full summary {reportPath}");
         }
+
+        ChartRenderer.RenderHistory(recentRuns);
+        if (recentRuns.Count >= 2)
+        {
+            ChartRenderer.RenderRegressions(recentRuns[0], recentRuns[1]);
+        }
+
+        ChartRenderer.RenderFlakyTests(flakyTests, flakyRuns.Count);
     }
 
-    private string? WriteMarkdownReport(TestResults results, TimeSpan elapsed, IReadOnlyList<string> regressions, IReadOnlyList<string> fixes)
+    private string? WriteMarkdownReport(
+        TestResults results,
+        TimeSpan elapsed,
+        IReadOnlyList<string> regressions,
+        IReadOnlyList<string> fixes,
+        IReadOnlyList<string> flakyTests,
+        int flakyRunCount)
     {
         try
         {
@@ -988,6 +983,7 @@ public class TestRunner
             AppendSection(builder, "Crashed", results.Crashed);
             AppendSection(builder, "Regressions", regressions);
             AppendSection(builder, "Fixes", fixes);
+            AppendSection(builder, $"Flaky (last {flakyRunCount} runs)", flakyTests);
 
             File.WriteAllText(reportPath, builder.ToString());
             return reportPath;
@@ -1029,6 +1025,37 @@ public class TestResults
     public HashSet<string> Skipped { get; } = new();
     public HashSet<string> Hanging { get; } = new();
     public HashSet<string> Crashed { get; } = new();
+    public List<SlotStatus> CompletionOrder { get; } = new();
+
+    public void AddPassed(string testName)
+    {
+        Passed.Add(testName);
+        CompletionOrder.Add(SlotStatus.Passed);
+    }
+
+    public void AddFailed(string testName)
+    {
+        Failed.Add(testName);
+        CompletionOrder.Add(SlotStatus.Failed);
+    }
+
+    public void AddSkipped(string testName)
+    {
+        Skipped.Add(testName);
+        CompletionOrder.Add(SlotStatus.Passed);
+    }
+
+    public void AddHanging(string testName)
+    {
+        Hanging.Add(testName);
+        CompletionOrder.Add(SlotStatus.Hanging);
+    }
+
+    public void AddCrashed(string testName)
+    {
+        Crashed.Add(testName);
+        CompletionOrder.Add(SlotStatus.Crashed);
+    }
 }
 
 public class WorkerCrashedException : Exception
