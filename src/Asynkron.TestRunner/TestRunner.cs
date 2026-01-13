@@ -1,6 +1,8 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
+using Asynkron.Profiler;
 using Asynkron.TestRunner.Models;
 using Asynkron.TestRunner.Protocol;
 using Asynkron.TestRunner.Profiling;
@@ -46,6 +48,7 @@ public class TestRunner
     private readonly string? _logFile;
     private readonly string? _resumeFilePath;
     private readonly WorkerProfilingSettings? _profilingSettings;
+    private readonly ConcurrentBag<string> _traceFiles = new();
     private readonly object _logLock = new();
     private readonly Action<TestResultDetail>? _resultCallback;
 
@@ -102,6 +105,196 @@ public class TestRunner
             ? labelSuffix
             : $"{assemblyLabel}-{labelSuffix}";
         return _profilingSettings.CreateOptions(outputDirectory, label);
+    }
+
+    private void RecordTraceFile(WorkerProcess worker)
+    {
+        if (string.IsNullOrWhiteSpace(worker.TraceFile))
+        {
+            return;
+        }
+
+        if (!File.Exists(worker.TraceFile))
+        {
+            return;
+        }
+
+        _traceFiles.Add(worker.TraceFile);
+    }
+
+    private void RenderProfilingResults()
+    {
+        if (_profilingSettings?.Enabled != true)
+        {
+            return;
+        }
+
+        var traceFiles = _traceFiles.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (traceFiles.Count == 0)
+        {
+            return;
+        }
+
+        var analyzer = new WorkerProfileAnalyzer(_store);
+        var renderer = new ProfilerConsoleRenderer();
+
+        Console.WriteLine();
+        AnsiConsole.MarkupLine("[bold]Worker Profiling Results[/]");
+
+        foreach (var traceFile in traceFiles.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
+        {
+            var label = Path.GetFileNameWithoutExtension(traceFile);
+            if (string.IsNullOrWhiteSpace(label))
+            {
+                label = traceFile;
+            }
+
+            if (_profilingSettings.Cpu)
+            {
+                try
+                {
+                    var cpuResults = analyzer.AnalyzeCpuTrace(traceFile);
+                    renderer.PrintCpuResults(
+                        cpuResults,
+                        label,
+                        description: null,
+                        rootFilter: null,
+                        functionFilter: null,
+                        includeRuntime: false,
+                        callTreeDepth: 30,
+                        callTreeWidth: 4,
+                        callTreeRootMode: "hottest",
+                        showSelfTimeTree: false,
+                        callTreeSiblingCutoffPercent: 5,
+                        hotThreshold: 0.4,
+                        showTimeline: false,
+                        timelineWidth: 40);
+                }
+                catch (Exception ex)
+                {
+                    AnsiConsole.MarkupLine($"[red]CPU profile failed for {EscapeMarkup(label)}:[/] {EscapeMarkup(ex.Message)}");
+                }
+            }
+
+            if (_profilingSettings.Memory)
+            {
+                try
+                {
+                    var allocation = analyzer.AnalyzeAllocationTrace(traceFile);
+                    var memoryResults = BuildMemoryProfileResult(allocation);
+                    renderer.PrintMemoryResults(
+                        memoryResults,
+                        label,
+                        description: null,
+                        callTreeRoot: null,
+                        includeRuntime: false,
+                        callTreeDepth: 30,
+                        callTreeWidth: 4,
+                        callTreeSiblingCutoffPercent: 5);
+                }
+                catch (Exception ex)
+                {
+                    AnsiConsole.MarkupLine($"[red]Memory profile failed for {EscapeMarkup(label)}:[/] {EscapeMarkup(ex.Message)}");
+                }
+            }
+
+            if (_profilingSettings.Exception)
+            {
+                try
+                {
+                    var exceptionResults = analyzer.AnalyzeExceptionTrace(traceFile);
+                    renderer.PrintExceptionResults(
+                        exceptionResults,
+                        label,
+                        description: null,
+                        rootFilter: null,
+                        exceptionTypeFilter: null,
+                        functionFilter: null,
+                        includeRuntime: false,
+                        callTreeDepth: 30,
+                        callTreeWidth: 4,
+                        callTreeRootMode: "hottest",
+                        callTreeSiblingCutoffPercent: 5);
+                }
+                catch (Exception ex)
+                {
+                    AnsiConsole.MarkupLine($"[red]Exception profile failed for {EscapeMarkup(label)}:[/] {EscapeMarkup(ex.Message)}");
+                }
+            }
+
+            if (_profilingSettings.Latency)
+            {
+                try
+                {
+                    var contentionResults = analyzer.AnalyzeContentionTrace(traceFile);
+                    renderer.PrintContentionResults(
+                        contentionResults,
+                        label,
+                        description: null,
+                        rootFilter: null,
+                        functionFilter: null,
+                        includeRuntime: false,
+                        callTreeDepth: 30,
+                        callTreeWidth: 4,
+                        callTreeRootMode: "hottest",
+                        callTreeSiblingCutoffPercent: 5);
+                }
+                catch (Exception ex)
+                {
+                    AnsiConsole.MarkupLine($"[red]Contention profile failed for {EscapeMarkup(label)}:[/] {EscapeMarkup(ex.Message)}");
+                }
+            }
+        }
+    }
+
+    private static MemoryProfileResult BuildMemoryProfileResult(AllocationCallTreeResult allocation)
+    {
+        var allocationEntries = allocation.TypeRoots
+            .OrderByDescending(root => root.TotalBytes)
+            .Take(50)
+            .Select(root => new AllocationEntry(root.Name, root.Count, FormatBytes(root.TotalBytes)))
+            .ToList();
+
+        var totalAllocated = FormatBytes(allocation.TotalBytes);
+
+        return new MemoryProfileResult(
+            Iterations: null,
+            TotalTime: null,
+            PerIterationTime: null,
+            TotalAllocated: null,
+            PerIterationAllocated: null,
+            Gen0Collections: null,
+            Gen1Collections: null,
+            Gen2Collections: null,
+            ParseAllocated: null,
+            EvaluateAllocated: null,
+            HeapBefore: null,
+            HeapAfter: null,
+            AllocationTotal: totalAllocated,
+            AllocationEntries: allocationEntries,
+            AllocationCallTree: allocation,
+            AllocationByTypeRaw: null,
+            RawOutput: null);
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes < 1024)
+        {
+            return bytes.ToString(CultureInfo.InvariantCulture) + " B";
+        }
+
+        if (bytes < 1024 * 1024)
+        {
+            return (bytes / 1024d).ToString("F2", CultureInfo.InvariantCulture) + " KB";
+        }
+
+        if (bytes < 1024L * 1024L * 1024L)
+        {
+            return (bytes / (1024d * 1024d)).ToString("F2", CultureInfo.InvariantCulture) + " MB";
+        }
+
+        return (bytes / (1024d * 1024d * 1024d)).ToString("F2", CultureInfo.InvariantCulture) + " GB";
     }
 
     private static void SeedResultsFromResume(ResumeTracker resumeTracker, TestResults results, LiveDisplay? display)
@@ -236,6 +429,7 @@ public class TestRunner
         stopwatch.Stop();
         PrintSummary(results, stopwatch.Elapsed);
         SaveResults(results, stopwatch.Elapsed);
+        RenderProfilingResults();
 
         return results.Failed.Count > 0 || results.Crashed.Count > 0 || results.Hanging.Count > 0 ? 1 : 0;
     }
@@ -654,6 +848,10 @@ public class TestRunner
                 worker.Kill();
                 display.WorkerRestarting(workerIndex);
             }
+            finally
+            {
+                RecordTraceFile(worker);
+            }
 
             running.Clear();
         }
@@ -768,6 +966,10 @@ public class TestRunner
                 worker.Kill();
                 break;
             }
+            finally
+            {
+                RecordTraceFile(worker);
+            }
         }
     }
 
@@ -878,6 +1080,10 @@ public class TestRunner
             {
                 worker.Kill();
                 break;
+            }
+            finally
+            {
+                RecordTraceFile(worker);
             }
         }
     }
