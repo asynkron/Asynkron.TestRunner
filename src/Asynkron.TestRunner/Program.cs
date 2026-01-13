@@ -558,13 +558,19 @@ static bool ParseProfileException(string[] args)
     return HasOption(args, "--profile-exception");
 }
 
+static string? ParseProfileRoot(string[] args)
+{
+    return GetOptionValue(args, "--root");
+}
+
 static WorkerProfilingSettings? ParseProfilingSettings(string[] args)
 {
     var settings = new WorkerProfilingSettings(
         ParseProfileCpu(args),
         ParseProfileMemory(args),
         ParseProfileLatency(args),
-        ParseProfileException(args));
+        ParseProfileException(args),
+        ParseProfileRoot(args));
 
     return settings.Enabled ? settings : null;
 }
@@ -646,6 +652,7 @@ static void PrintUsage()
           --profile-memory             Collect allocation traces per worker
           --profile-latency            Collect contention/latency traces per worker
           --profile-exception          Collect exception traces per worker
+          --root <substring>           Call tree root filter for profiling output
           -h, --help                   Show this help
 
         Examples:

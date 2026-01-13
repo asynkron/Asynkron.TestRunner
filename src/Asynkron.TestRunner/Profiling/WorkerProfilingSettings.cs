@@ -4,7 +4,8 @@ public sealed record WorkerProfilingSettings(
     bool Cpu,
     bool Memory,
     bool Latency,
-    bool Exception)
+    bool Exception,
+    string? RootFilter)
 {
     public bool Enabled => Cpu || Memory || Latency || Exception;
 
@@ -12,6 +13,8 @@ public sealed record WorkerProfilingSettings(
     {
         return new WorkerProfilingOptions(Cpu, Memory, Latency, Exception, outputDirectory, label);
     }
+
+    public string? NormalizedRootFilter => string.IsNullOrWhiteSpace(RootFilter) ? null : RootFilter;
 }
 
 public sealed record WorkerProfilingOptions(

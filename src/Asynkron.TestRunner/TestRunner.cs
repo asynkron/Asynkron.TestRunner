@@ -149,6 +149,8 @@ public class TestRunner
                 label = traceFile;
             }
 
+            var rootFilter = _profilingSettings.NormalizedRootFilter;
+
             if (_profilingSettings.Cpu)
             {
                 try
@@ -158,7 +160,7 @@ public class TestRunner
                         cpuResults,
                         label,
                         description: null,
-                        rootFilter: null,
+                        rootFilter: rootFilter,
                         functionFilter: null,
                         includeRuntime: false,
                         callTreeDepth: 30,
@@ -186,7 +188,7 @@ public class TestRunner
                         memoryResults,
                         label,
                         description: null,
-                        callTreeRoot: null,
+                        callTreeRoot: rootFilter,
                         includeRuntime: false,
                         callTreeDepth: 30,
                         callTreeWidth: 4,
@@ -207,7 +209,7 @@ public class TestRunner
                         exceptionResults,
                         label,
                         description: null,
-                        rootFilter: null,
+                        rootFilter: rootFilter,
                         exceptionTypeFilter: null,
                         functionFilter: null,
                         includeRuntime: false,
@@ -231,7 +233,7 @@ public class TestRunner
                         contentionResults,
                         label,
                         description: null,
-                        rootFilter: null,
+                        rootFilter: rootFilter,
                         functionFilter: null,
                         includeRuntime: false,
                         callTreeDepth: 30,
