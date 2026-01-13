@@ -160,14 +160,42 @@ public static class ChartRenderer
             : results.OrderBy(r => r.Timestamp).ToList();
 
         Console.WriteLine();
-        Console.WriteLine($"{Bold}Test History ({results.Count} runs){Reset}");
-        Console.WriteLine(new string('─', 70));
+        AnsiConsole.MarkupLine($"[bold]Test History ({results.Count} runs)[/]");
+
+        var table = new Table();
+        table.Border(TableBorder.Rounded);
+        table.BorderStyle(new Style(Color.Grey));
+        table.ShowRowSeparators = false;
+        table.AddColumn(new TableColumn("Timestamp").NoWrap());
+        table.AddColumn(new TableColumn("Results"));
+        table.AddColumn(new TableColumn("Pass Rate").RightAligned());
+        table.AddColumn(new TableColumn("Failures").RightAligned());
 
         foreach (var result in ordered)
         {
-            RenderBar(result);
+            var timestamp = result.Timestamp.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+            var total = result.Passed + result.Failed + result.Skipped + result.TimedOutTests.Count;
+            var slots = result.CompletionOrder.Count > 0
+                ? new List<SlotStatus>(result.CompletionOrder)
+                : BuildFallbackSlots(result);
+            var heatMap = HeatMapRenderer.RenderGradientHeatMap(slots, Math.Max(total, slots.Count), BarWidth);
+
+            var passRate = result.PassRate.ToString("F1", CultureInfo.CurrentCulture);
+            var passText = $"{result.Passed}/{result.Total} ({passRate}%)";
+
+            var failureCount = result.Failed + result.TimedOutTests.Count;
+            var failureText = failureCount > 0
+                ? $"[red]✗{failureCount}[/]"
+                : "[green]✓[/]";
+
+            table.AddRow(
+                new Markup($"[dim]{Markup.Escape(timestamp)}[/]"),
+                new Markup(heatMap),
+                new Markup(Markup.Escape(passText)),
+                new Markup(failureText));
         }
 
+        AnsiConsole.Write(table);
         Console.WriteLine();
     }
 
@@ -316,25 +344,6 @@ public static class ChartRenderer
         return slots;
     }
 
-    private static void RenderBar(TestRunResult result)
-    {
-        var timestamp = result.Timestamp.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
-        var total = result.Passed + result.Failed + result.Skipped + result.TimedOutTests.Count;
-        var slots = result.CompletionOrder.Count > 0
-            ? new List<SlotStatus>(result.CompletionOrder)
-            : BuildFallbackSlots(result);
-
-        var heatMap = HeatMapRenderer.RenderGradientHeatMap(slots, Math.Max(total, slots.Count), BarWidth);
-
-        var failedIndicator = result.Failed > 0
-            ? $"{Red}✗{result.Failed}{Reset}"
-            : $"{Green}✓{Reset}";
-
-        Console.Write($"{Dim}{timestamp}{Reset}  ");
-        AnsiConsole.Markup(heatMap);
-        Console.Write($"  {result.Passed}/{result.Total} ({result.PassRate:F1}%)  ");
-        Console.WriteLine(failedIndicator);
-    }
 
     private static string FormatDuration(TimeSpan duration)
     {
