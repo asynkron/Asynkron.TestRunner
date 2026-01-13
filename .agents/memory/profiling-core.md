@@ -1,0 +1,2 @@
+# Profiling Core Integration
+Asynkron.TestRunner can consume the `Asynkron.Profiler.Core` NuGet package to analyze worker traces. The `WorkerProfileAnalyzer` wrapper (in `src/Asynkron.TestRunner/Profiling/WorkerProfileAnalyzer.cs`) constructs a `ProfilerTraceAnalyzer` with a profile output folder under `ResultStore.StoreFolder` and exposes analysis methods for CPU, allocation, exception, and contention traces.
