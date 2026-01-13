@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using Asynkron.TestRunner;
+using Asynkron.TestRunner.Profiling;
 
 var signalRegistrations = RegisterShutdownHandlers();
 
@@ -106,6 +107,7 @@ static async Task<int> HandleRunAsync(string[] args)
     var verbose = ParseVerbose(args);
     var logFile = ParseLogFile(args);
     var resumeEnabled = ParseResume(args, out var resumeFile);
+    var profilingSettings = ParseProfilingSettings(args);
 
     if (assemblyPaths.Count == 0)
     {
@@ -115,7 +117,7 @@ static async Task<int> HandleRunAsync(string[] args)
     }
 
     var store = new ResultStore();
-    var runner = new TestRunner(store, timeout, hangTimeout, filter, quiet, streamingConsole, workers, verbose, logFile, resumeEnabled ? resumeFile : null);
+    var runner = new TestRunner(store, timeout, hangTimeout, filter, quiet, streamingConsole, workers, verbose, logFile, resumeEnabled ? resumeFile : null, profilingSettings);
     return await runner.RunTestsAsync(assemblyPaths.ToArray());
 }
 
@@ -536,6 +538,37 @@ static string? ParseFilter(string[] args)
     return GetOptionValue(args, "--filter", "-f");
 }
 
+static bool ParseProfileCpu(string[] args)
+{
+    return HasOption(args, "--profile-cpu");
+}
+
+static bool ParseProfileMemory(string[] args)
+{
+    return HasOption(args, "--profile-memory");
+}
+
+static bool ParseProfileLatency(string[] args)
+{
+    return HasOption(args, "--profile-latency");
+}
+
+static bool ParseProfileException(string[] args)
+{
+    return HasOption(args, "--profile-exception");
+}
+
+static WorkerProfilingSettings? ParseProfilingSettings(string[] args)
+{
+    var settings = new WorkerProfilingSettings(
+        ParseProfileCpu(args),
+        ParseProfileMemory(args),
+        ParseProfileLatency(args),
+        ParseProfileException(args));
+
+    return settings.Enabled ? settings : null;
+}
+
 static int HandleStats(string[] args, ResultStore store)
 {
     var historyCount = GetOptionInt(args, "--history", "-n") ?? 10;
@@ -609,6 +642,10 @@ static void PrintUsage()
           -v, --verbose                Show diagnostic logs on stderr
           --log <file>                 Write diagnostic logs to file
           --resume [file]              Resume from checkpoint (default: .testrunner/resume.jsonl)
+          --profile-cpu                Collect CPU sampling traces per worker
+          --profile-memory             Collect allocation traces per worker
+          --profile-latency            Collect contention/latency traces per worker
+          --profile-exception          Collect exception traces per worker
           -h, --help                   Show this help
 
         Examples:

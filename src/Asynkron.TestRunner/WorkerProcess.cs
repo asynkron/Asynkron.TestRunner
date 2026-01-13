@@ -1,6 +1,10 @@
 using System.Diagnostics;
+using System.Globalization;
+using System.Linq;
 using System.Runtime.CompilerServices;
+using Asynkron.TestRunner.Profiling;
 using Asynkron.TestRunner.Protocol;
+using Microsoft.Diagnostics.Tracing.Parsers;
 
 namespace Asynkron.TestRunner;
 
@@ -17,17 +21,20 @@ public class WorkerProcess : IAsyncDisposable
     private readonly StreamReader _stdout;
     private bool _disposed;
 
-    private WorkerProcess(Process process)
+    public WorkerProcess(Process process, string? traceFile = null)
     {
         _process = process;
         _stdin = process.StandardInput;
         _stdout = process.StandardOutput;
+        TraceFile = traceFile;
 
         lock (WorkersLock)
         {
             ActiveWorkers.Add(this);
         }
     }
+
+    public string? TraceFile { get; }
 
     /// <summary>
     /// Kills all active worker processes (for Ctrl+C cleanup)
@@ -50,15 +57,24 @@ public class WorkerProcess : IAsyncDisposable
     /// <summary>
     /// Spawns a new worker process
     /// </summary>
-    public static WorkerProcess Spawn(string? workerPath = null)
+    public static WorkerProcess Spawn(string? workerPath = null, WorkerProfilingOptions? profiling = null)
     {
         // Find worker executable
         var workerExe = workerPath ?? FindWorkerPath();
+        var (startInfo, traceFile) = BuildStartInfo(workerExe, profiling);
 
+        var process = new Process { StartInfo = startInfo };
+        process.Start();
+
+        return new WorkerProcess(process, traceFile);
+    }
+
+    private static (ProcessStartInfo StartInfo, string? TraceFile) BuildStartInfo(
+        string workerExe,
+        WorkerProfilingOptions? profiling)
+    {
         var startInfo = new ProcessStartInfo
         {
-            FileName = "dotnet",
-            Arguments = workerExe,
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -66,10 +82,109 @@ public class WorkerProcess : IAsyncDisposable
             CreateNoWindow = true
         };
 
-        var process = new Process { StartInfo = startInfo };
-        process.Start();
+        if (profiling?.Enabled != true)
+        {
+            startInfo.FileName = "dotnet";
+            startInfo.Arguments = QuoteArgument(workerExe);
+            return (startInfo, null);
+        }
 
-        return new WorkerProcess(process);
+        Directory.CreateDirectory(profiling.OutputDirectory);
+        var traceFile = BuildTraceFilePath(profiling);
+        var args = new List<string> { "collect", "--show-child-io" };
+
+        if (profiling.Memory)
+        {
+            args.Add("--profile");
+            args.Add("gc-verbose");
+        }
+
+        var providers = new List<string>();
+        if (profiling.Cpu)
+        {
+            providers.Add("Microsoft-DotNETCore-SampleProfiler");
+        }
+
+        if (profiling.Exception)
+        {
+            providers.Add(BuildExceptionProvider());
+        }
+
+        if (profiling.Latency)
+        {
+            providers.Add(BuildContentionProvider());
+        }
+
+        if (providers.Count > 0)
+        {
+            args.Add("--providers");
+            args.Add(string.Join(",", providers));
+        }
+
+        args.Add("--output");
+        args.Add(traceFile);
+        args.Add("--");
+        args.Add("dotnet");
+        args.Add(workerExe);
+
+        startInfo.FileName = "dotnet-trace";
+        startInfo.Arguments = string.Join(" ", args.Select(QuoteArgument));
+        return (startInfo, traceFile);
+    }
+
+    private static string BuildTraceFilePath(WorkerProfilingOptions profiling)
+    {
+        var traceParts = new List<string>();
+        if (profiling.Cpu)
+        {
+            traceParts.Add("cpu");
+        }
+
+        if (profiling.Memory)
+        {
+            traceParts.Add("memory");
+        }
+
+        if (profiling.Latency)
+        {
+            traceParts.Add("latency");
+        }
+
+        if (profiling.Exception)
+        {
+            traceParts.Add("exception");
+        }
+
+        var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
+        var traceLabel = traceParts.Count == 0 ? "trace" : string.Join("-", traceParts);
+        var filename = $"{profiling.Label}_{traceLabel}_{timestamp}.nettrace";
+        return Path.Combine(profiling.OutputDirectory, filename);
+    }
+
+    private static string BuildExceptionProvider()
+    {
+        var keywordsValue = ClrTraceEventParser.Keywords.Exception;
+        var keywords = ((ulong)keywordsValue).ToString("x", CultureInfo.InvariantCulture);
+        return $"Microsoft-Windows-DotNETRuntime:0x{keywords}:4";
+    }
+
+    private static string BuildContentionProvider()
+    {
+        var keywordsValue = ClrTraceEventParser.Keywords.Contention | ClrTraceEventParser.Keywords.Threading;
+        var keywords = ((ulong)keywordsValue).ToString("x", CultureInfo.InvariantCulture);
+        return $"Microsoft-Windows-DotNETRuntime:0x{keywords}:4";
+    }
+
+    private static string QuoteArgument(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return "\"\"";
+        }
+
+        return value.Contains(' ') || value.Contains('"')
+            ? $"\"{value.Replace("\"", "\\\"")}\""
+            : value;
     }
 
     /// <summary>

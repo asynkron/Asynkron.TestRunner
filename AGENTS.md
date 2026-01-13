@@ -20,6 +20,7 @@ This repo is a .NET global tool that orchestrates worker processes to run tests 
 
 ## Defaults
 - You can fix build warnings, update documentation, and update memory without asking first.
+- Use judgment calls like a senior engineer: fix small issues you notice, clean up after your own changes, and run relevant tests without asking.
 
 ## Key Paths
 - `src/Asynkron.TestRunner/` – CLI coordinator and live UI.

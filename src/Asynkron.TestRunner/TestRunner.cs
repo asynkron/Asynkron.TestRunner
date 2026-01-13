@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text;
 using Asynkron.TestRunner.Models;
 using Asynkron.TestRunner.Protocol;
+using Asynkron.TestRunner.Profiling;
 using Spectre.Console;
 
 namespace Asynkron.TestRunner;
@@ -44,10 +45,11 @@ public class TestRunner
     private readonly bool _verbose;
     private readonly string? _logFile;
     private readonly string? _resumeFilePath;
+    private readonly WorkerProfilingSettings? _profilingSettings;
     private readonly object _logLock = new();
     private readonly Action<TestResultDetail>? _resultCallback;
 
-    public TestRunner(ResultStore store, int? timeoutSeconds = null, int? hangTimeoutSeconds = null, string? filter = null, bool quiet = false, bool streamingConsole = false, int workerCount = 1, bool verbose = false, string? logFile = null, string? resumeFilePath = null, Action<TestResultDetail>? resultCallback = null)
+    public TestRunner(ResultStore store, int? timeoutSeconds = null, int? hangTimeoutSeconds = null, string? filter = null, bool quiet = false, bool streamingConsole = false, int workerCount = 1, bool verbose = false, string? logFile = null, string? resumeFilePath = null, WorkerProfilingSettings? profilingSettings = null, Action<TestResultDetail>? resultCallback = null)
     {
         _store = store;
         _testTimeoutSeconds = timeoutSeconds ?? 30;
@@ -59,6 +61,7 @@ public class TestRunner
         _verbose = verbose;
         _logFile = logFile;
         _resumeFilePath = resumeFilePath;
+        _profilingSettings = profilingSettings;
         _resultCallback = resultCallback;
     }
 
@@ -84,6 +87,21 @@ public class TestRunner
                 Console.Error.WriteLine(line);
             }
         }
+    }
+
+    private WorkerProfilingOptions? CreateWorkerProfilingOptions(string assemblyPath, string labelSuffix)
+    {
+        if (_profilingSettings?.Enabled != true)
+        {
+            return null;
+        }
+
+        var outputDirectory = Path.Combine(_store.StoreFolder, "profiles");
+        var assemblyLabel = Path.GetFileNameWithoutExtension(assemblyPath);
+        var label = string.IsNullOrWhiteSpace(assemblyLabel)
+            ? labelSuffix
+            : $"{assemblyLabel}-{labelSuffix}";
+        return _profilingSettings.CreateOptions(outputDirectory, label);
     }
 
     private static void SeedResultsFromResume(ResumeTracker resumeTracker, TestResults results, LiveDisplay? display)
@@ -374,7 +392,8 @@ public class TestRunner
 
             running.Clear();
 
-            await using var worker = WorkerProcess.Spawn();
+            var profiling = CreateWorkerProfilingOptions(assemblyPath, $"worker-{workerIndex}");
+            await using var worker = WorkerProcess.Spawn(profiling: profiling);
 
             try
             {
@@ -667,7 +686,8 @@ public class TestRunner
             attempts++;
             running.Clear();
 
-            await using var worker = WorkerProcess.Spawn();
+            var profiling = CreateWorkerProfilingOptions(assemblyPath, $"recovery-{attempts}");
+            await using var worker = WorkerProcess.Spawn(profiling: profiling);
 
             try
             {
@@ -775,7 +795,8 @@ public class TestRunner
             attempts++;
             running.Clear();
 
-            await using var worker = WorkerProcess.Spawn();
+            var profiling = CreateWorkerProfilingOptions(assemblyPath, $"recovery-{attempts}");
+            await using var worker = WorkerProcess.Spawn(profiling: profiling);
 
             try
             {

@@ -1,0 +1,2 @@
+# TestRunner profiling flags
+The test runner exposes profiling flags: `--profile-cpu`, `--profile-memory`, `--profile-latency`, and `--profile-exception`. When enabled, `WorkerProcess.Spawn` wraps workers with `dotnet-trace collect --show-child-io`, writing `.nettrace` files under `.testrunner/<project>/<command>/profiles` with labels based on assembly and worker/recovery attempt.
