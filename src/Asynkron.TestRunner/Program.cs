@@ -103,6 +103,8 @@ static async Task<int> HandleRunAsync(string[] args)
     var hangTimeout = ParseHangTimeout(args);
     var quiet = ParseQuiet(args);
     var streamingConsole = ParseConsole(args);
+    var treeView = ParseTreeView(args);
+    var treeDepth = ParseTreeDepth(args);
     var workers = ParseWorkers(args) ?? 4;
     var verbose = ParseVerbose(args);
     var logFile = ParseLogFile(args);
@@ -117,7 +119,8 @@ static async Task<int> HandleRunAsync(string[] args)
     }
 
     var store = new ResultStore();
-    var runner = new TestRunner(store, timeout, hangTimeout, filter, quiet, streamingConsole, workers, verbose, logFile, resumeEnabled ? resumeFile : null, profilingSettings);
+    var treeSettings = treeView ? new TreeViewSettings { MaxDepth = treeDepth } : null;
+    var runner = new TestRunner(store, timeout, hangTimeout, filter, quiet, streamingConsole, treeView, treeSettings, workers, verbose, logFile, resumeEnabled ? resumeFile : null, profilingSettings);
     return await runner.RunTestsAsync(assemblyPaths.ToArray());
 }
 
@@ -533,6 +536,16 @@ static bool ParseConsole(string[] args)
     return HasOption(args, "--console", "-c");
 }
 
+static bool ParseTreeView(string[] args)
+{
+    return HasOption(args, "--tree-view", "--tree");
+}
+
+static int ParseTreeDepth(string[] args)
+{
+    return GetOptionInt(args, "--tree-depth") ?? 1; // Default: namespace + class
+}
+
 static string? ParseFilter(string[] args)
 {
     return GetOptionValue(args, "--filter", "-f");
@@ -645,6 +658,8 @@ static void PrintUsage()
           -w, --workers [N]            Run N worker processes in parallel (default: 4; flag alone uses CPU count)
           -q, --quiet                  Suppress verbose output
           -c, --console                Streaming console mode (no interactive UI)
+          --tree-view, --tree          Tree view UI (scrollable namespace/class hierarchy)
+          --tree-depth <N>             Tree depth: 0=namespace, 1=class (default), 2=method
           -v, --verbose                Show diagnostic logs on stderr
           --log <file>                 Write diagnostic logs to file
           --resume [file]              Resume from checkpoint (default: .testrunner/resume.jsonl)

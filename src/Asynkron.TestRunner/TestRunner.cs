@@ -43,6 +43,8 @@ public class TestRunner
     private readonly string? _filter;
     private readonly bool _quiet;
     private readonly bool _streamingConsole;
+    private readonly bool _treeView;
+    private readonly TreeViewSettings? _treeViewSettings;
     private readonly int _workerCount;
     private readonly bool _verbose;
     private readonly string? _logFile;
@@ -52,7 +54,7 @@ public class TestRunner
     private readonly object _logLock = new();
     private readonly Action<TestResultDetail>? _resultCallback;
 
-    public TestRunner(ResultStore store, int? timeoutSeconds = null, int? hangTimeoutSeconds = null, string? filter = null, bool quiet = false, bool streamingConsole = false, int workerCount = 1, bool verbose = false, string? logFile = null, string? resumeFilePath = null, WorkerProfilingSettings? profilingSettings = null, Action<TestResultDetail>? resultCallback = null)
+    public TestRunner(ResultStore store, int? timeoutSeconds = null, int? hangTimeoutSeconds = null, string? filter = null, bool quiet = false, bool streamingConsole = false, bool treeView = false, TreeViewSettings? treeViewSettings = null, int workerCount = 1, bool verbose = false, string? logFile = null, string? resumeFilePath = null, WorkerProfilingSettings? profilingSettings = null, Action<TestResultDetail>? resultCallback = null)
     {
         _store = store;
         _testTimeoutSeconds = timeoutSeconds ?? 30;
@@ -60,6 +62,8 @@ public class TestRunner
         _filter = filter;
         _quiet = quiet;
         _streamingConsole = streamingConsole;
+        _treeView = treeView;
+        _treeViewSettings = treeViewSettings;
         _workerCount = Math.Max(1, workerCount);
         _verbose = verbose;
         _logFile = logFile;
@@ -422,6 +426,10 @@ public class TestRunner
             {
                 await RunWithRecoveryQuietAsync(assemblyPath, allTests, results, ct);
             }
+            else if (_treeView)
+            {
+                await RunWithRecoveryTreeViewAsync(assemblyPath, allTests, results, ct);
+            }
             else
             {
                 await RunWithRecoveryLiveAsync(assemblyPath, allTests, results, ct);
@@ -540,6 +548,377 @@ public class TestRunner
     {
         public int Size;
         public BatchSizeHolder(int initial) => Size = initial;
+    }
+
+    private async Task RunWithRecoveryTreeViewAsync(string assemblyPath, List<string> allTests, TestResults results, CancellationToken ct)
+    {
+        var display = new TreeViewDisplay(_treeViewSettings);
+        display.SetFilter(_filter);
+        display.SetAssembly(assemblyPath);
+        display.SetWorkerCount(_workerCount);
+        display.Initialize(allTests);
+
+        var resumeTracker = ResumeTracker.TryLoad(GetResumeFilePath(), assemblyPath, allTests);
+
+        if (resumeTracker != null)
+        {
+            SeedResultsFromResumeTreeView(resumeTracker, results, display);
+        }
+
+        var pendingTests = resumeTracker?.FilterPending() ?? allTests;
+
+        var failureDetails = new List<(string Name, string Message, string? Stack)>();
+        var failureLock = new object();
+
+        // Shared work queue - workers pull from this
+        var queue = new WorkQueue(pendingTests);
+        var initialBatchSize = Math.Max(50, pendingTests.Count / _workerCount / 4);
+        var batchSizeHolder = new BatchSizeHolder(initialBatchSize);
+        var tier = 1;
+
+        // Set up keyboard handling for scrolling
+        var scrollCts = new CancellationTokenSource();
+        var scrollTask = Task.Run(async () =>
+        {
+            while (!scrollCts.Token.IsCancellationRequested)
+            {
+                if (Console.KeyAvailable)
+                {
+                    var key = Console.ReadKey(intercept: true);
+                    switch (key.Key)
+                    {
+                        case ConsoleKey.UpArrow:
+                            display.ScrollUp();
+                            break;
+                        case ConsoleKey.DownArrow:
+                            display.ScrollDown();
+                            break;
+                        case ConsoleKey.PageUp:
+                            display.PageUp();
+                            break;
+                        case ConsoleKey.PageDown:
+                            display.PageDown();
+                            break;
+                    }
+                }
+                await Task.Delay(50, scrollCts.Token).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            }
+        }, scrollCts.Token);
+
+        try
+        {
+            await AnsiConsole.Live(display.Render())
+                .AutoClear(false)
+                .StartAsync(async ctx =>
+                {
+                    void UpdateDisplay() => ctx.UpdateTarget(display.Render());
+
+                    // Run all workers in parallel - they pull batches from shared queue
+                    var workerTasks = Enumerable.Range(0, _workerCount)
+                        .Select(index => RunWorkerTreeViewAsync(assemblyPath, index, queue, batchSizeHolder, results, display, resumeTracker, failureDetails, failureLock, UpdateDisplay, ct))
+                        .ToList();
+
+                    // Monitor loop: refresh display and handle tier promotion
+                    while (true)
+                    {
+                        display.SetQueueStats(queue.PendingCount, queue.SuspiciousCount, queue.ConfirmedCount, batchSizeHolder.Size);
+                        UpdateDisplay();
+
+                        // Check if we need to promote suspicious tests (tier escalation)
+                        if (!queue.HasPendingWork && queue.SuspiciousCount > 0 && queue.AllWorkersIdle)
+                        {
+                            var promoted = queue.PromoteSuspicious();
+                            var current = batchSizeHolder.Size;
+                            var newBatchSize = current > 100 ? current / 2 : 1;
+                            batchSizeHolder.Size = newBatchSize;
+                            tier++;
+                            Log(-1, $"TIER {tier}: Promoted {promoted} suspicious tests, batch size {current}→{newBatchSize}");
+                        }
+
+                        // Check if all work is done
+                        if (queue.IsComplete)
+                        {
+                            break;
+                        }
+
+                        await Task.Delay(100, ct);
+                    }
+
+                    // Wait for workers to finish
+                    await Task.WhenAll(workerTasks);
+                    UpdateDisplay();
+                });
+        }
+        finally
+        {
+            scrollCts.Cancel();
+            try { await scrollTask; } catch { }
+        }
+
+        // Print failure details after live display
+        if (failureDetails.Count > 0)
+        {
+            Console.WriteLine();
+            AnsiConsole.MarkupLine($"[red]Failed tests ({failureDetails.Count}):[/]");
+            foreach (var (name, message, stack) in failureDetails.Take(10))
+            {
+                AnsiConsole.MarkupLine($"[red]  ✗[/] {EscapeMarkup(name)}");
+                AnsiConsole.MarkupLine($"[red]    {EscapeMarkup(message)}[/]");
+                if (stack != null)
+                {
+                    var firstLine = stack.Split('\n').FirstOrDefault()?.Trim();
+                    if (firstLine != null)
+                    {
+                        AnsiConsole.MarkupLine($"[dim]    {EscapeMarkup(firstLine)}[/]");
+                    }
+                }
+            }
+            if (failureDetails.Count > 10)
+            {
+                AnsiConsole.MarkupLine($"[dim]  ...and {failureDetails.Count - 10} more[/]");
+            }
+        }
+    }
+
+    private static void SeedResultsFromResumeTreeView(ResumeTracker resumeTracker, TestResults results, TreeViewDisplay display)
+    {
+        foreach (var entry in resumeTracker.CompletedEntries)
+        {
+            switch (entry.Status)
+            {
+                case "passed":
+                    results.AddPassed(entry.Test);
+                    display.TestPassed(entry.Test);
+                    break;
+                case "failed":
+                    results.AddFailed(entry.Test);
+                    display.TestFailed(entry.Test);
+                    break;
+                case "skipped":
+                    results.AddSkipped(entry.Test);
+                    display.TestSkipped(entry.Test);
+                    break;
+                case "hanging":
+                    results.AddHanging(entry.Test);
+                    display.TestHanging(entry.Test);
+                    break;
+                case "crashed":
+                    results.AddCrashed(entry.Test);
+                    display.TestCrashed(entry.Test);
+                    break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Worker loop for tree view: pulls batches from shared queue until no work remains
+    /// </summary>
+    private async Task RunWorkerTreeViewAsync(
+        string assemblyPath,
+        int workerIndex,
+        WorkQueue queue,
+        BatchSizeHolder batchSizeHolder,
+        TestResults results,
+        TreeViewDisplay display,
+        ResumeTracker? resumeTracker,
+        List<(string Name, string Message, string? Stack)> failureDetails,
+        object failureLock,
+        Action updateDisplay,
+        CancellationToken ct)
+    {
+        var running = new HashSet<string>();
+        var testOutput = new Dictionary<string, StringBuilder>();
+        var testStartTimes = new Dictionary<string, DateTime>();
+        var fqnToDisplayName = new Dictionary<string, string>();
+
+        Log(workerIndex, "Worker started (tree view)");
+
+        while (!ct.IsCancellationRequested)
+        {
+            // Pull next batch from queue with current batch size
+            var batch = queue.TakeBatch(workerIndex, batchSizeHolder.Size);
+            if (batch.Count == 0)
+            {
+                // No pending work - check if there's suspicious/confirmed work pending tier promotion
+                if (queue.SuspiciousCount > 0 || queue.ConfirmedCount > 0)
+                {
+                    // Wait for monitor to promote tests
+                    await Task.Delay(100, ct);
+                    continue;
+                }
+
+                // All work done
+                break;
+            }
+
+            Log(workerIndex, $"Running batch of {batch.Count} tests");
+            display.WorkerActivity(workerIndex);
+            display.SetWorkerBatch(workerIndex, 0, batch.Count);
+
+            var profiling = CreateWorkerProfilingOptions(assemblyPath, $"worker{workerIndex}");
+            await using var worker = WorkerProcess.Spawn(profiling: profiling);
+
+            try
+            {
+                using var cts = new CancellationTokenSource();
+
+                await foreach (var msg in worker.RunAsync(assemblyPath, batch, _testTimeoutSeconds, cts.Token)
+                    .WithTimeout(TimeSpan.FromSeconds(_hangTimeoutSeconds), cts))
+                {
+                    display.WorkerActivity(workerIndex);
+
+                    switch (msg)
+                    {
+                        case TestStartedEvent started:
+                            running.Add(started.FullyQualifiedName);
+                            testStartTimes[started.FullyQualifiedName] = DateTime.UtcNow;
+                            fqnToDisplayName[started.FullyQualifiedName] = started.DisplayName;
+                            display.TestStarted(started.DisplayName);
+                            break;
+
+                        case TestPassedEvent testPassed:
+                            running.Remove(testPassed.FullyQualifiedName);
+                            queue.TestCompleted(workerIndex, testPassed.FullyQualifiedName);
+                            results.AddPassed(testPassed.FullyQualifiedName);
+                            display.TestPassed(testPassed.FullyQualifiedName);
+                            MarkResume(resumeTracker, "passed", testPassed.FullyQualifiedName, testPassed.DisplayName);
+                            _resultCallback?.Invoke(new TestResultDetail(
+                                testPassed.FullyQualifiedName,
+                                testPassed.DisplayName,
+                                "passed",
+                                testPassed.DurationMs
+                            ));
+                            display.WorkerTestPassed(workerIndex);
+                            break;
+
+                        case TestFailedEvent testFailed:
+                            running.Remove(testFailed.FullyQualifiedName);
+                            queue.TestCompleted(workerIndex, testFailed.FullyQualifiedName);
+                            results.AddFailed(testFailed.FullyQualifiedName);
+                            display.TestFailed(testFailed.FullyQualifiedName);
+                            MarkResume(resumeTracker, "failed", testFailed.FullyQualifiedName, testFailed.DisplayName);
+                            lock (failureLock)
+                            {
+                                failureDetails.Add((testFailed.DisplayName, testFailed.ErrorMessage, testFailed.StackTrace));
+                            }
+                            _resultCallback?.Invoke(new TestResultDetail(
+                                testFailed.FullyQualifiedName,
+                                testFailed.DisplayName,
+                                "failed",
+                                testFailed.DurationMs,
+                                testFailed.ErrorMessage,
+                                testFailed.StackTrace,
+                                Output: testOutput.TryGetValue(testFailed.FullyQualifiedName, out var output) ? output.ToString() : null
+                            ));
+                            testOutput.Remove(testFailed.FullyQualifiedName);
+                            display.WorkerTestFailed(workerIndex);
+                            break;
+
+                        case TestSkippedEvent testSkipped:
+                            running.Remove(testSkipped.FullyQualifiedName);
+                            queue.TestCompleted(workerIndex, testSkipped.FullyQualifiedName);
+                            results.AddSkipped(testSkipped.FullyQualifiedName);
+                            display.TestSkipped(testSkipped.FullyQualifiedName);
+                            MarkResume(resumeTracker, "skipped", testSkipped.FullyQualifiedName, testSkipped.DisplayName);
+                            _resultCallback?.Invoke(new TestResultDetail(
+                                testSkipped.FullyQualifiedName,
+                                testSkipped.DisplayName,
+                                "skipped",
+                                0,
+                                SkipReason: testSkipped.Reason
+                            ));
+                            break;
+
+                        case TestOutputEvent testOutput2:
+                            if (!testOutput.TryGetValue(testOutput2.FullyQualifiedName, out var sb))
+                            {
+                                sb = new StringBuilder();
+                                testOutput[testOutput2.FullyQualifiedName] = sb;
+                            }
+                            sb.AppendLine(testOutput2.Text);
+                            break;
+
+                        case RunCompletedEvent:
+                            // Mark any still-running tests as crashed
+                            foreach (var fqn in running.ToList())
+                            {
+                                running.Remove(fqn);
+                                queue.TestCompleted(workerIndex, fqn);
+                                results.AddCrashed(fqn);
+                                display.TestCrashed(fqn);
+                                var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
+                                MarkResume(resumeTracker, "crashed", fqn, dn);
+                                ReportCrashedOrHanging(fqn, "crashed", testOutput);
+                                display.WorkerTestCrashed(workerIndex);
+                            }
+                            break;
+
+                        case ErrorEvent:
+                            break;
+                    }
+
+                    updateDisplay();
+                }
+            }
+            catch (TimeoutException)
+            {
+                // Running tests caused the timeout - fast track to isolation
+                Log(workerIndex, $"TIMEOUT: {running.Count} running → confirmed, rest → suspicious");
+                queue.MarkConfirmed(workerIndex, running);
+                foreach (var fqn in running)
+                {
+                    var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
+                    display.TestRemoved(dn);
+                }
+                var neverStarted = queue.GetAssigned(workerIndex);
+                if (neverStarted.Count > 0)
+                {
+                    Log(workerIndex, $"{neverStarted.Count} never started → suspicious");
+                    queue.MarkSuspicious(workerIndex, neverStarted);
+                }
+                worker.Kill();
+                display.WorkerRestarting(workerIndex);
+            }
+            catch (WorkerCrashedException ex)
+            {
+                Log(workerIndex, $"CRASHED: {running.Count} running → confirmed, rest → suspicious, exit={ex.ExitCode}");
+                queue.MarkConfirmed(workerIndex, running);
+                foreach (var fqn in running)
+                {
+                    var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
+                    display.TestRemoved(dn);
+                }
+                var neverStarted = queue.GetAssigned(workerIndex);
+                if (neverStarted.Count > 0)
+                {
+                    Log(workerIndex, $"{neverStarted.Count} never started → suspicious");
+                    queue.MarkSuspicious(workerIndex, neverStarted);
+                }
+                display.WorkerRestarting(workerIndex);
+            }
+            catch (Exception ex)
+            {
+                Log(workerIndex, $"EXCEPTION: {ex.GetType().Name}: {ex.Message}");
+                var reclaimed = queue.WorkerCrashed(workerIndex);
+                Log(workerIndex, $"Reclaimed {reclaimed.Count} tests");
+                foreach (var fqn in running)
+                {
+                    var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
+                    display.TestRemoved(dn);
+                }
+                worker.Kill();
+                display.WorkerRestarting(workerIndex);
+            }
+            finally
+            {
+                RecordTraceFile(worker);
+            }
+
+            running.Clear();
+        }
+
+        Log(workerIndex, "COMPLETE (tree view)");
+        display.WorkerComplete(workerIndex);
     }
 
     /// <summary>

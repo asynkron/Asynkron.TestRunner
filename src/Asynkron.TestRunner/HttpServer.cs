@@ -176,6 +176,8 @@ public class HttpServer
                     req.Filter,
                     quiet: false, // Show UI!
                     streamingConsole: false,
+                    treeView: false,
+                    treeViewSettings: null,
                     req.Workers ?? 1,
                     resultCallback: result => _testResults[result.FullyQualifiedName] = result
                 );
