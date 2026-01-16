@@ -90,6 +90,12 @@ static async Task<int> RunAsync(string[] args)
         return await HandleRunAsync(args);
     }
 
+    // No arguments or only options (no subcommand, no paths) - auto-detect and run test projects
+    if (args.Length == 0 || args.All(a => a.StartsWith('-')))
+    {
+        return await HandleAutoRunAsync(args);
+    }
+
     // No valid command
     PrintUsage();
     return 1;
@@ -123,6 +129,124 @@ static async Task<int> HandleRunAsync(string[] args)
     var treeSettings = treeView ? new TreeViewSettings { MaxDepth = treeDepth } : null;
     var runner = new TestRunner(store, timeout, hangTimeout, filter, quiet, streamingConsole, treeView, treeSettings, workers, verbose, logFile, resumeEnabled ? resumeFile : null, profilingSettings, ghBugReport: ghBugReport);
     return await runner.RunTestsAsync(assemblyPaths.ToArray());
+}
+
+static async Task<int> HandleAutoRunAsync(string[] args)
+{
+    var testProjects = FindTestProjects(Environment.CurrentDirectory);
+    
+    if (testProjects.Count == 0)
+    {
+        Console.WriteLine("No test projects found in current directory.");
+        Console.WriteLine();
+        Console.WriteLine("Looking for projects matching patterns:");
+        Console.WriteLine("  - *.Tests.csproj");
+        Console.WriteLine("  - *.Test.csproj");
+        Console.WriteLine("  - *Tests.csproj");
+        Console.WriteLine("  - *Test.csproj");
+        Console.WriteLine();
+        Console.WriteLine("Or run with explicit path: testrunner run <path.csproj>");
+        return 1;
+    }
+
+    Console.WriteLine($"Found {testProjects.Count} test project(s):");
+    foreach (var project in testProjects)
+    {
+        Console.WriteLine($"  - {Path.GetRelativePath(Environment.CurrentDirectory, project)}");
+    }
+    Console.WriteLine();
+
+    var overallExitCode = 0;
+    var results = new List<(string Project, int ExitCode, TimeSpan Duration)>();
+
+    foreach (var project in testProjects)
+    {
+        var projectName = Path.GetFileNameWithoutExtension(project);
+        Console.WriteLine($"{'=',-60}");
+        Console.WriteLine($"Running: {projectName}");
+        Console.WriteLine($"{'=',-60}");
+        
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        
+        // Build args array with project path
+        var runArgs = new[] { "run", project }.Concat(args).ToArray();
+        var exitCode = await HandleRunAsync(runArgs);
+        
+        stopwatch.Stop();
+        results.Add((projectName, exitCode, stopwatch.Elapsed));
+        
+        if (exitCode != 0)
+        {
+            overallExitCode = 1;
+        }
+        
+        Console.WriteLine();
+    }
+
+    // Print summary
+    Console.WriteLine($"{'=',-60}");
+    Console.WriteLine("Summary");
+    Console.WriteLine($"{'=',-60}");
+    
+    foreach (var (project, exitCode, duration) in results)
+    {
+        var status = exitCode == 0 ? "\u001b[32mPASSED\u001b[0m" : "\u001b[31mFAILED\u001b[0m";
+        Console.WriteLine($"  {status} {project} ({duration.TotalSeconds:F1}s)");
+    }
+    
+    Console.WriteLine();
+    var passed = results.Count(r => r.ExitCode == 0);
+    var failed = results.Count(r => r.ExitCode != 0);
+    Console.WriteLine($"Total: {passed} passed, {failed} failed");
+    
+    return overallExitCode;
+}
+
+static List<string> FindTestProjects(string rootDir)
+{
+    var testProjects = new List<string>();
+    
+    // Common test project naming patterns
+    var patterns = new[]
+    {
+        "*.Tests.csproj",
+        "*.Test.csproj",
+        "*Tests.csproj",
+        "*Test.csproj",
+        "*.IntegrationTests.csproj",
+        "*.UnitTests.csproj"
+    };
+
+    try
+    {
+        foreach (var pattern in patterns)
+        {
+            var matches = Directory.GetFiles(rootDir, pattern, SearchOption.AllDirectories);
+            foreach (var match in matches)
+            {
+                // Skip bin/obj directories
+                if (match.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}") ||
+                    match.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}"))
+                {
+                    continue;
+                }
+                
+                if (!testProjects.Contains(match))
+                {
+                    testProjects.Add(match);
+                }
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"Warning: Error scanning for test projects: {ex.Message}");
+    }
+
+    // Sort by path for consistent ordering
+    testProjects.Sort();
+    
+    return testProjects;
 }
 
 static bool HasOption(string[] args, params string[] options)
@@ -650,6 +774,7 @@ static void PrintUsage()
         testrunner - Native .NET Test Runner
 
         Usage:
+          testrunner                                     Auto-detect and run all test projects
           testrunner run <path> [options]                Run tests (.dll or .csproj)
           testrunner list <path> [options]               List tests without running
           testrunner serve [--port N]                    Start HTTP server with UI (for MCP)
@@ -678,6 +803,7 @@ static void PrintUsage()
           -h, --help                   Show this help
 
         Examples:
+          testrunner                                     # Auto-detect and run all test projects
           testrunner run ./bin/Release/net8.0/MyTests.dll
           testrunner run MyTests.csproj --console --filter "UserTests"
           testrunner run MyTests.dll --filter "Class=UserTests"
@@ -685,6 +811,7 @@ static void PrintUsage()
           testrunner list MyTests.csproj --filter "Should"
 
         Features:
+          - Auto-detects test projects (*.Tests.csproj, *.Test.csproj, etc.)
           - Supports .dll and .csproj files (.csproj builds in Release mode)
           - Executes xUnit and NUnit tests in isolated worker processes
           - Simple substring filtering or structured filters (Class=, Method=, etc.)
