@@ -25,4 +25,10 @@
     <ProjectReference Include="..\..\src\Asynkron.TestRunner\Asynkron.TestRunner.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Build-time only: used by integration-style tests that spawn the worker process -->
+    <ProjectReference Include="..\..\src\Asynkron.TestRunner.Worker\Asynkron.TestRunner.Worker.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\Asynkron.TestRunner.SampleXunit\Asynkron.TestRunner.SampleXunit.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
 </Project>
