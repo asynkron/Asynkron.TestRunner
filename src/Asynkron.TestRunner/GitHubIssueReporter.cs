@@ -123,6 +123,14 @@ public class GitHubIssueReporter
             return new GitHubReportResult(0, 0, _failedTests.Count);
         }
 
+        // Sanity check: too many failures likely indicates a systemic issue, not individual test bugs
+        const int maxFailuresForReporting = 20;
+        if (_failedTests.Count > maxFailuresForReporting)
+        {
+            AnsiConsole.MarkupLine($"[yellow]Warning:[/] {_failedTests.Count} tests failed (>{maxFailuresForReporting}). Skipping GitHub issue reporting to avoid spam.");
+            return new GitHubReportResult(0, 0, _failedTests.Count);
+        }
+
         AnsiConsole.MarkupLine($"[dim]Checking GitHub issues for {_failedTests.Count} failed tests...[/]");
 
         // Get repo URL for links
