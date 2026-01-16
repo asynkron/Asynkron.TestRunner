@@ -91,7 +91,7 @@ static async Task<int> RunAsync(string[] args)
     }
 
     // No arguments or only options (no subcommand, no paths) - auto-detect and run test projects
-    if (args.Length == 0 || args.All(a => a.StartsWith('-')))
+    if (args.Length == 0 || IsOnlyOptions(args))
     {
         return await HandleAutoRunAsync(args);
     }
@@ -247,6 +247,45 @@ static List<string> FindTestProjects(string rootDir)
     testProjects.Sort();
     
     return testProjects;
+}
+
+static bool IsOnlyOptions(string[] args)
+{
+    // Check if all arguments are options (--flag) or option values (following an option that takes a value)
+    var optionsWithValues = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "-f", "--filter",
+        "-t", "--timeout",
+        "--hang-timeout",
+        "-w", "--workers",
+        "--log",
+        "--resume",
+        "--tree-depth",
+        "--port",
+        "--root"
+    };
+
+    for (var i = 0; i < args.Length; i++)
+    {
+        var arg = args[i];
+        
+        // If it starts with -, it's an option
+        if (arg.StartsWith('-'))
+        {
+            // If this option takes a value, skip the next argument
+            if (optionsWithValues.Contains(arg) && i + 1 < args.Length)
+            {
+                i++; // Skip the value
+            }
+            continue;
+        }
+        
+        // This is a non-option argument that's not a value for a previous option
+        // It could be a subcommand or a path
+        return false;
+    }
+    
+    return true;
 }
 
 static bool HasOption(string[] args, params string[] options)
