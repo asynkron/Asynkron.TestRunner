@@ -6,12 +6,22 @@ using Spectre.Console;
 namespace Asynkron.TestRunner;
 
 /// <summary>
+/// Type of test issue to report
+/// </summary>
+public enum TestIssueType
+{
+    Failed,
+    Hanging,
+    Crashed
+}
+
+/// <summary>
 /// Reports failing tests to GitHub Issues using the gh CLI
 /// </summary>
 public class GitHubIssueReporter
 {
     private readonly string _workingDirectory;
-    private readonly List<FailedTestInfo> _failedTests = [];
+    private readonly List<TestIssueInfo> _testIssues = [];
     private readonly bool _verbose;
     private string? _repoUrl;
 
@@ -91,8 +101,33 @@ public class GitHubIssueReporter
     /// </summary>
     public void AddFailedTest(string fqn, string displayName, string? errorMessage, string? stackTrace, string? output)
     {
-        _failedTests.Add(new FailedTestInfo
+        AddTestIssue(TestIssueType.Failed, fqn, displayName, errorMessage, stackTrace, output);
+    }
+
+    /// <summary>
+    /// Add a hanging test to report
+    /// </summary>
+    public void AddHangingTest(string fqn, string displayName, TimeSpan? timeout = null)
+    {
+        var errorMessage = timeout.HasValue 
+            ? $"Test exceeded timeout of {timeout.Value.TotalSeconds:F0} seconds"
+            : "Test did not complete within the expected time";
+        AddTestIssue(TestIssueType.Hanging, fqn, displayName, errorMessage, null, null);
+    }
+
+    /// <summary>
+    /// Add a crashed test to report
+    /// </summary>
+    public void AddCrashedTest(string fqn, string displayName, string? errorMessage, string? output)
+    {
+        AddTestIssue(TestIssueType.Crashed, fqn, displayName, errorMessage, null, output);
+    }
+
+    private void AddTestIssue(TestIssueType issueType, string fqn, string displayName, string? errorMessage, string? stackTrace, string? output)
+    {
+        _testIssues.Add(new TestIssueInfo
         {
+            IssueType = issueType,
             FullyQualifiedName = fqn,
             DisplayName = displayName,
             ErrorMessage = errorMessage,
@@ -102,11 +137,11 @@ public class GitHubIssueReporter
     }
 
     /// <summary>
-    /// Process all failed tests - match existing issues or create new ones
+    /// Process all test issues - match existing issues or create new ones
     /// </summary>
     public async Task<GitHubReportResult> ReportFailuresAsync(CancellationToken ct = default)
     {
-        if (_failedTests.Count == 0)
+        if (_testIssues.Count == 0)
         {
             return new GitHubReportResult(0, 0, 0);
         }
@@ -114,24 +149,24 @@ public class GitHubIssueReporter
         if (!IsGhAvailable())
         {
             AnsiConsole.MarkupLine("[yellow]Warning:[/] gh CLI not found. Skipping GitHub issue reporting.");
-            return new GitHubReportResult(0, 0, _failedTests.Count);
+            return new GitHubReportResult(0, 0, _testIssues.Count);
         }
 
         if (!IsInGitHubRepo())
         {
             AnsiConsole.MarkupLine("[yellow]Warning:[/] Not in a GitHub repository. Skipping GitHub issue reporting.");
-            return new GitHubReportResult(0, 0, _failedTests.Count);
+            return new GitHubReportResult(0, 0, _testIssues.Count);
         }
 
-        // Sanity check: too many failures likely indicates a systemic issue, not individual test bugs
-        const int maxFailuresForReporting = 20;
-        if (_failedTests.Count > maxFailuresForReporting)
+        // Sanity check: too many issues likely indicates a systemic problem, not individual test bugs
+        const int maxIssuesForReporting = 20;
+        if (_testIssues.Count > maxIssuesForReporting)
         {
-            AnsiConsole.MarkupLine($"[yellow]Warning:[/] {_failedTests.Count} tests failed (>{maxFailuresForReporting}). Skipping GitHub issue reporting to avoid spam.");
-            return new GitHubReportResult(0, 0, _failedTests.Count);
+            AnsiConsole.MarkupLine($"[yellow]Warning:[/] {_testIssues.Count} test issues (>{maxIssuesForReporting}). Skipping GitHub issue reporting to avoid spam.");
+            return new GitHubReportResult(0, 0, _testIssues.Count);
         }
 
-        AnsiConsole.MarkupLine($"[dim]Checking GitHub issues for {_failedTests.Count} failed tests...[/]");
+        AnsiConsole.MarkupLine($"[dim]Checking GitHub issues for {_testIssues.Count} test issues...[/]");
 
         // Get repo URL for links
         _repoUrl = GetRepoUrl();
@@ -143,7 +178,7 @@ public class GitHubIssueReporter
         var created = 0;
         var skipped = 0;
 
-        foreach (var test in _failedTests)
+        foreach (var test in _testIssues)
         {
             ct.ThrowIfCancellationRequested();
 
@@ -165,7 +200,8 @@ public class GitHubIssueReporter
                 if (issueNumber > 0)
                 {
                     var issueUrl = FormatIssueLink(issueNumber);
-                    AnsiConsole.MarkupLine($"[green]  Created issue {issueUrl}[/] for [blue]{test.DisplayName}[/]");
+                    var typeLabel = GetIssueTypeLabel(test.IssueType);
+                    AnsiConsole.MarkupLine($"[green]  Created {typeLabel} issue {issueUrl}[/] for [blue]{test.DisplayName}[/]");
                     created++;
                 }
                 else
@@ -177,6 +213,14 @@ public class GitHubIssueReporter
 
         return new GitHubReportResult(matched, created, skipped);
     }
+
+    private static string GetIssueTypeLabel(TestIssueType issueType) => issueType switch
+    {
+        TestIssueType.Failed => "failure",
+        TestIssueType.Hanging => "hanging",
+        TestIssueType.Crashed => "crash",
+        _ => "test"
+    };
 
     private async Task<List<GitHubIssue>> GetOpenIssuesAsync(CancellationToken ct)
     {
@@ -222,7 +266,7 @@ public class GitHubIssueReporter
         return issues;
     }
 
-    private static GitHubIssue? FindMatchingIssue(FailedTestInfo test, List<GitHubIssue> issues)
+    private static GitHubIssue? FindMatchingIssue(TestIssueInfo test, List<GitHubIssue> issues)
     {
         // Parse test FQN into parts for matching
         var parts = ParseTestFqn(test.FullyQualifiedName);
@@ -318,9 +362,16 @@ public class GitHubIssueReporter
         };
     }
 
-    private async Task<int> CreateIssueAsync(FailedTestInfo test, CancellationToken ct)
+    private async Task<int> CreateIssueAsync(TestIssueInfo test, CancellationToken ct)
     {
-        var title = $"Failing Test: {test.DisplayName}";
+        var titlePrefix = test.IssueType switch
+        {
+            TestIssueType.Failed => "Failing Test",
+            TestIssueType.Hanging => "Hanging Test",
+            TestIssueType.Crashed => "Crashed Test",
+            _ => "Test Issue"
+        };
+        var title = $"{titlePrefix}: {test.DisplayName}";
         if (title.Length > 200)
         {
             title = title[..197] + "...";
@@ -366,19 +417,46 @@ public class GitHubIssueReporter
         }
     }
 
-    private string BuildIssueBody(FailedTestInfo test)
+    private string BuildIssueBody(TestIssueInfo test)
     {
         var sb = new StringBuilder();
         
-        sb.AppendLine("## Failing Test");
+        var sectionTitle = test.IssueType switch
+        {
+            TestIssueType.Failed => "Failing Test",
+            TestIssueType.Hanging => "Hanging Test",
+            TestIssueType.Crashed => "Crashed Test",
+            _ => "Test Issue"
+        };
+        
+        sb.AppendLine($"## {sectionTitle}");
         sb.AppendLine();
         sb.AppendLine($"**Test:** `{test.FullyQualifiedName}`");
         sb.AppendLine($"**Display Name:** {test.DisplayName}");
         sb.AppendLine();
 
+        // Add type-specific description
+        switch (test.IssueType)
+        {
+            case TestIssueType.Hanging:
+                sb.AppendLine("This test did not complete within the expected time and was terminated.");
+                sb.AppendLine();
+                break;
+            case TestIssueType.Crashed:
+                sb.AppendLine("The test worker process crashed while running this test.");
+                sb.AppendLine();
+                break;
+        }
+
         if (!string.IsNullOrWhiteSpace(test.ErrorMessage))
         {
-            sb.AppendLine("## Error Message");
+            var errorTitle = test.IssueType switch
+            {
+                TestIssueType.Hanging => "## Timeout Details",
+                TestIssueType.Crashed => "## Crash Details",
+                _ => "## Error Message"
+            };
+            sb.AppendLine(errorTitle);
             sb.AppendLine();
             sb.AppendLine("```");
             sb.AppendLine(test.ErrorMessage);
@@ -421,23 +499,30 @@ public class GitHubIssueReporter
             sb.AppendLine();
         }
 
-        // Add other failing tests in the same run
-        var otherFailures = _failedTests
+        // Add other test issues in the same run
+        var otherIssues = _testIssues
             .Where(t => t.FullyQualifiedName != test.FullyQualifiedName)
             .Take(10)
             .ToList();
 
-        if (otherFailures.Count > 0)
+        if (otherIssues.Count > 0)
         {
-            sb.AppendLine("## Other Failing Tests in This Run");
+            sb.AppendLine("## Other Test Issues in This Run");
             sb.AppendLine();
-            foreach (var other in otherFailures)
+            foreach (var other in otherIssues)
             {
-                sb.AppendLine($"- `{other.DisplayName}`");
+                var typeIndicator = other.IssueType switch
+                {
+                    TestIssueType.Failed => "[FAILED]",
+                    TestIssueType.Hanging => "[HANGING]",
+                    TestIssueType.Crashed => "[CRASHED]",
+                    _ => ""
+                };
+                sb.AppendLine($"- {typeIndicator} `{other.DisplayName}`");
             }
-            if (_failedTests.Count > 11)
+            if (_testIssues.Count > 11)
             {
-                sb.AppendLine($"- ... and {_failedTests.Count - 11} more");
+                sb.AppendLine($"- ... and {_testIssues.Count - 11} more");
             }
             sb.AppendLine();
         }
@@ -486,8 +571,9 @@ public class GitHubIssueReporter
         return arg.Replace("\\", "\\\\").Replace("\"", "\\\"");
     }
 
-    private class FailedTestInfo
+    private class TestIssueInfo
     {
+        public TestIssueType IssueType { get; init; }
         public string FullyQualifiedName { get; init; } = "";
         public string DisplayName { get; init; } = "";
         public string? ErrorMessage { get; init; }

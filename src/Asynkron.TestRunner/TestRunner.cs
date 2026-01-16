@@ -356,15 +356,27 @@ public class TestRunner
 
     private void ReportCrashedOrHanging(string fqn, string status, Dictionary<string, StringBuilder>? testOutput = null, string? errorMessage = null)
     {
+        var outputStr = testOutput?.TryGetValue(fqn, out var output) == true ? output.ToString() : null;
+        
         _resultCallback?.Invoke(new TestResultDetail(
             fqn,
             fqn, // Use FQN as display name for crashed/hanging
             status,
             0,
             errorMessage,
-            Output: testOutput?.TryGetValue(fqn, out var output) == true ? output.ToString() : null
+            Output: outputStr
         ));
         testOutput?.Remove(fqn);
+
+        // Report to GitHub if enabled
+        if (status == "hanging")
+        {
+            _ghReporter?.AddHangingTest(fqn, fqn, TimeSpan.FromSeconds(_hangTimeoutSeconds));
+        }
+        else if (status == "crashed")
+        {
+            _ghReporter?.AddCrashedTest(fqn, fqn, errorMessage, outputStr);
+        }
     }
 
     public async Task<int> RunTestsAsync(string[] assemblyPaths, CancellationToken ct = default)
@@ -1459,7 +1471,7 @@ public class TestRunner
                                 pending.Remove(fqn);
                                 results.AddCrashed(fqn);
                                 MarkResume(resumeTracker, "crashed", fqn, fqn);
-                                _ghReporter?.AddFailedTest(fqn, fqn, "Test crashed (no result received)", null, null);
+                                _ghReporter?.AddCrashedTest(fqn, fqn, "Test crashed (no result received)", null);
                                 Console.WriteLine($"\x1b[91m{"[CRASHED]",-10}\x1b[0m {fqn}");
                             }
                             break;
