@@ -92,9 +92,16 @@ public class TreeViewDisplay
     private static int ContentWidth => PanelWidth - 4; // Account for panel borders
     private static int ContentHeight => PanelHeight - 8; // Account for panel borders, header, stats, progress bar, scroll indicator
 
+    // Status icons
+    private const string IconPassed = "●";      // Green filled circle (U+25CF)
+    private const string IconFailed = "●";      // Red filled circle (U+25CF)
+    private const string IconPending = "○";     // Empty circle (U+25CB)
+    private static readonly string[] SpinnerFrames = ["◐", "◓", "◑", "◒"]; // Spinning circle animation
+
     private readonly object _lock = new();
     private readonly Stopwatch _stopwatch = Stopwatch.StartNew();
     private readonly TreeViewSettings _settings;
+    private int _spinnerFrame;
 
     // Tree structure
     private readonly TreeViewNode _root = new() { Name = "Tests", FullPath = "" };
@@ -435,6 +442,9 @@ public class TreeViewDisplay
     {
         lock (_lock)
         {
+            // Advance spinner animation
+            _spinnerFrame++;
+
             var completed = _totalPassed + _totalFailed + _totalSkipped + _totalHanging + _totalCrashed;
             var elapsed = _stopwatch.Elapsed;
             var rate = elapsed.TotalSeconds > 0 ? completed / elapsed.TotalSeconds : 0;
@@ -492,7 +502,8 @@ public class TreeViewDisplay
                 var node = flatNode.Node;
                 var prefix = flatNode.TreePrefix;
                 var icon = GetNodeIcon(node);
-                var color = node.GetStatusColor();
+                var iconColor = GetNodeIconColor(node);
+                var textColor = node.GetStatusColor();
                 var text = node.GetDisplayText();
 
                 // Truncate if too long (account for prefix length)
@@ -503,7 +514,7 @@ public class TreeViewDisplay
                     text = text[..(maxTextLen - 3)] + "...";
                 }
 
-                treeRows.Add(new Markup($"[dim]{prefix}[/]{icon} [{color}]{Markup.Escape(text)}[/]"));
+                treeRows.Add(new Markup($"[dim]{prefix}[/][{iconColor}]{icon}[/] [{textColor}]{Markup.Escape(text)}[/]"));
             }
 
             // Pad with empty rows to fill the space
@@ -567,19 +578,47 @@ public class TreeViewDisplay
         return Math.Max(5, ContentHeight - 2);
     }
 
-    private static string GetNodeIcon(TreeViewNode node)
+    private string GetNodeIcon(TreeViewNode node)
     {
         if (!node.IsComplete)
         {
-            return "○"; // In progress
+            // Animated spinner for in-progress nodes
+            if (node.Completed > 0)
+            {
+                // Has some progress - show spinner
+                return SpinnerFrames[_spinnerFrame % SpinnerFrames.Length];
+            }
+            // No progress yet - empty circle
+            return IconPending;
         }
 
         if (node.HasFailures)
         {
-            return "✗"; // Has failures
+            return IconFailed; // Red filled circle
         }
 
-        return "✓"; // All passed
+        return IconPassed; // Green filled circle
+    }
+
+    private static string GetNodeIconColor(TreeViewNode node)
+    {
+        if (!node.IsComplete)
+        {
+            if (node.Completed > 0)
+            {
+                // In progress with some results - yellow spinner
+                return "yellow";
+            }
+            // Pending - dim
+            return "dim";
+        }
+
+        if (node.HasFailures)
+        {
+            return "red";
+        }
+
+        return "green";
     }
 
     private static void RecalculateAggregates(TreeViewNode node)
