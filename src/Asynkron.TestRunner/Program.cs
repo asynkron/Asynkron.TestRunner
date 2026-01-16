@@ -110,6 +110,7 @@ static async Task<int> HandleRunAsync(string[] args)
     var logFile = ParseLogFile(args);
     var resumeEnabled = ParseResume(args, out var resumeFile);
     var profilingSettings = ParseProfilingSettings(args);
+    var ghBugReport = ParseGhBugReport(args);
 
     if (assemblyPaths.Count == 0)
     {
@@ -120,7 +121,7 @@ static async Task<int> HandleRunAsync(string[] args)
 
     var store = new ResultStore();
     var treeSettings = treeView ? new TreeViewSettings { MaxDepth = treeDepth } : null;
-    var runner = new TestRunner(store, timeout, hangTimeout, filter, quiet, streamingConsole, treeView, treeSettings, workers, verbose, logFile, resumeEnabled ? resumeFile : null, profilingSettings);
+    var runner = new TestRunner(store, timeout, hangTimeout, filter, quiet, streamingConsole, treeView, treeSettings, workers, verbose, logFile, resumeEnabled ? resumeFile : null, profilingSettings, ghBugReport: ghBugReport);
     return await runner.RunTestsAsync(assemblyPaths.ToArray());
 }
 
@@ -551,6 +552,11 @@ static string? ParseFilter(string[] args)
     return GetOptionValue(args, "--filter", "-f");
 }
 
+static bool ParseGhBugReport(string[] args)
+{
+    return HasOption(args, "--gh-bugreport", "--gh-issues");
+}
+
 static bool ParseProfileCpu(string[] args)
 {
     return HasOption(args, "--profile-cpu");
@@ -663,6 +669,7 @@ static void PrintUsage()
           -v, --verbose                Show diagnostic logs on stderr
           --log <file>                 Write diagnostic logs to file
           --resume [file]              Resume from checkpoint (default: .testrunner/resume.jsonl)
+          --gh-bugreport               Auto-create GitHub issues for failing tests (requires gh CLI)
           --profile-cpu                Collect CPU sampling traces per worker
           --profile-memory             Collect allocation traces per worker
           --profile-latency            Collect contention/latency traces per worker
@@ -674,11 +681,13 @@ static void PrintUsage()
           testrunner run ./bin/Release/net8.0/MyTests.dll
           testrunner run MyTests.csproj --console --filter "UserTests"
           testrunner run MyTests.dll --filter "Class=UserTests"
+          testrunner run MyTests.dll --gh-bugreport
           testrunner list MyTests.csproj --filter "Should"
 
         Features:
           - Supports .dll and .csproj files (.csproj builds in Release mode)
           - Executes xUnit and NUnit tests in isolated worker processes
           - Simple substring filtering or structured filters (Class=, Method=, etc.)
+          - Auto-create GitHub issues for failures with --gh-bugreport (matches existing issues first)
         """);
 }

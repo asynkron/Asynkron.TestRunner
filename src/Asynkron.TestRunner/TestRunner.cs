@@ -50,11 +50,13 @@ public class TestRunner
     private readonly string? _logFile;
     private readonly string? _resumeFilePath;
     private readonly WorkerProfilingSettings? _profilingSettings;
+    private readonly bool _ghBugReport;
     private readonly ConcurrentBag<string> _traceFiles = new();
     private readonly object _logLock = new();
     private readonly Action<TestResultDetail>? _resultCallback;
+    private GitHubIssueReporter? _ghReporter;
 
-    public TestRunner(ResultStore store, int? timeoutSeconds = null, int? hangTimeoutSeconds = null, string? filter = null, bool quiet = false, bool streamingConsole = false, bool treeView = false, TreeViewSettings? treeViewSettings = null, int workerCount = 1, bool verbose = false, string? logFile = null, string? resumeFilePath = null, WorkerProfilingSettings? profilingSettings = null, Action<TestResultDetail>? resultCallback = null)
+    public TestRunner(ResultStore store, int? timeoutSeconds = null, int? hangTimeoutSeconds = null, string? filter = null, bool quiet = false, bool streamingConsole = false, bool treeView = false, TreeViewSettings? treeViewSettings = null, int workerCount = 1, bool verbose = false, string? logFile = null, string? resumeFilePath = null, WorkerProfilingSettings? profilingSettings = null, Action<TestResultDetail>? resultCallback = null, bool ghBugReport = false)
     {
         _store = store;
         _testTimeoutSeconds = timeoutSeconds ?? 30;
@@ -70,6 +72,7 @@ public class TestRunner
         _resumeFilePath = resumeFilePath;
         _profilingSettings = profilingSettings;
         _resultCallback = resultCallback;
+        _ghBugReport = ghBugReport;
     }
 
     private void Log(int workerIndex, string message)
@@ -417,6 +420,12 @@ public class TestRunner
 
             AnsiConsole.MarkupLine($"[dim]Found {allTests.Count} tests[/]");
 
+            // Initialize GitHub reporter if enabled
+            if (_ghBugReport)
+            {
+                _ghReporter = new GitHubIssueReporter(assemblyPath, _verbose);
+            }
+
             // Run with resilient recovery
             if (_streamingConsole)
             {
@@ -440,6 +449,23 @@ public class TestRunner
         PrintSummary(results, stopwatch.Elapsed);
         SaveResults(results, stopwatch.Elapsed);
         RenderProfilingResults();
+
+        // Report failures to GitHub if enabled
+        if (_ghBugReport && _ghReporter != null)
+        {
+            try
+            {
+                var ghResult = await _ghReporter.ReportFailuresAsync(ct);
+                if (ghResult.Created > 0 || ghResult.Matched > 0)
+                {
+                    AnsiConsole.MarkupLine($"[dim]GitHub Issues: {ghResult.Created} created, {ghResult.Matched} already exist, {ghResult.Skipped} skipped[/]");
+                }
+            }
+            catch (Exception ex)
+            {
+                AnsiConsole.MarkupLine($"[yellow]Warning:[/] Failed to report to GitHub: {ex.Message}");
+            }
+        }
 
         return results.Failed.Count > 0 || results.Crashed.Count > 0 || results.Hanging.Count > 0 ? 1 : 0;
     }
@@ -801,6 +827,7 @@ public class TestRunner
                             {
                                 failureDetails.Add((testFailed.DisplayName, testFailed.ErrorMessage, testFailed.StackTrace));
                             }
+                            var failedOutput = testOutput.TryGetValue(testFailed.FullyQualifiedName, out var output) ? output.ToString() : null;
                             _resultCallback?.Invoke(new TestResultDetail(
                                 testFailed.FullyQualifiedName,
                                 testFailed.DisplayName,
@@ -808,8 +835,9 @@ public class TestRunner
                                 testFailed.DurationMs,
                                 testFailed.ErrorMessage,
                                 testFailed.StackTrace,
-                                Output: testOutput.TryGetValue(testFailed.FullyQualifiedName, out var output) ? output.ToString() : null
+                                Output: failedOutput
                             ));
+                            _ghReporter?.AddFailedTest(testFailed.FullyQualifiedName, testFailed.DisplayName, testFailed.ErrorMessage, testFailed.StackTrace, failedOutput);
                             testOutput.Remove(testFailed.FullyQualifiedName);
                             display.WorkerTestFailed(workerIndex);
                             break;
@@ -1083,6 +1111,7 @@ public class TestRunner
                                 failureDetails.Add((testFailed.DisplayName, testFailed.ErrorMessage, testFailed.StackTrace));
                             }
 
+                            var failedOutput2 = testOutput.GetValueOrDefault(testFailed.FullyQualifiedName)?.ToString();
                             _resultCallback?.Invoke(new TestResultDetail(
                                 testFailed.FullyQualifiedName,
                                 testFailed.DisplayName,
@@ -1090,8 +1119,9 @@ public class TestRunner
                                 testFailed.DurationMs,
                                 testFailed.ErrorMessage,
                                 testFailed.StackTrace,
-                                testOutput.GetValueOrDefault(testFailed.FullyQualifiedName)?.ToString()
+                                failedOutput2
                             ));
+                            _ghReporter?.AddFailedTest(testFailed.FullyQualifiedName, testFailed.DisplayName, testFailed.ErrorMessage, testFailed.StackTrace, failedOutput2);
                             testOutput.Remove(testFailed.FullyQualifiedName);
                             break;
 
@@ -1294,6 +1324,7 @@ public class TestRunner
                             pending.Remove(testFailed.FullyQualifiedName);
                             results.AddFailed(testFailed.FullyQualifiedName);
                             MarkResume(resumeTracker, "failed", testFailed.FullyQualifiedName, testFailed.DisplayName);
+                            _ghReporter?.AddFailedTest(testFailed.FullyQualifiedName, testFailed.DisplayName, testFailed.ErrorMessage, testFailed.StackTrace, null);
                             AnsiConsole.MarkupLine($"[red]  ✗[/] {EscapeMarkup(testFailed.DisplayName)}");
                             break;
 
@@ -1408,6 +1439,7 @@ public class TestRunner
                             pending.Remove(testFailed.FullyQualifiedName);
                             results.AddFailed(testFailed.FullyQualifiedName);
                             MarkResume(resumeTracker, "failed", testFailed.FullyQualifiedName, testFailed.DisplayName);
+                            _ghReporter?.AddFailedTest(testFailed.FullyQualifiedName, testFailed.DisplayName, testFailed.ErrorMessage, testFailed.StackTrace, null);
                             Console.WriteLine($"\x1b[91m{"[FAILED]",-10}\x1b[0m {testFailed.DisplayName}");
                             break;
 
@@ -1427,6 +1459,7 @@ public class TestRunner
                                 pending.Remove(fqn);
                                 results.AddCrashed(fqn);
                                 MarkResume(resumeTracker, "crashed", fqn, fqn);
+                                _ghReporter?.AddFailedTest(fqn, fqn, "Test crashed (no result received)", null, null);
                                 Console.WriteLine($"\x1b[91m{"[CRASHED]",-10}\x1b[0m {fqn}");
                             }
                             break;
