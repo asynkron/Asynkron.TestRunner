@@ -13,6 +13,7 @@ public class GitHubIssueReporter
     private readonly string _workingDirectory;
     private readonly List<FailedTestInfo> _failedTests = [];
     private readonly bool _verbose;
+    private string? _repoUrl;
 
     public GitHubIssueReporter(string assemblyOrProjectPath, bool verbose = false)
     {
@@ -61,6 +62,31 @@ public class GitHubIssueReporter
     }
 
     /// <summary>
+    /// Get the GitHub repository URL
+    /// </summary>
+    private string? GetRepoUrl()
+    {
+        var (exitCode, stdout, _) = RunGh("repo view --json url --jq .url");
+        if (exitCode == 0 && !string.IsNullOrWhiteSpace(stdout))
+        {
+            return stdout.Trim();
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Format an issue number as a clickable link
+    /// </summary>
+    private string FormatIssueLink(int issueNumber)
+    {
+        if (_repoUrl != null)
+        {
+            return $"[link={_repoUrl}/issues/{issueNumber}]#{issueNumber}[/]";
+        }
+        return $"#{issueNumber}";
+    }
+
+    /// <summary>
     /// Add a failed test to report
     /// </summary>
     public void AddFailedTest(string fqn, string displayName, string? errorMessage, string? stackTrace, string? output)
@@ -99,6 +125,9 @@ public class GitHubIssueReporter
 
         AnsiConsole.MarkupLine($"[dim]Checking GitHub issues for {_failedTests.Count} failed tests...[/]");
 
+        // Get repo URL for links
+        _repoUrl = GetRepoUrl();
+
         // Get existing open issues
         var existingIssues = await GetOpenIssuesAsync(ct);
         
@@ -116,7 +145,8 @@ public class GitHubIssueReporter
             {
                 if (_verbose)
                 {
-                    AnsiConsole.MarkupLine($"[dim]  Found existing issue #{matchingIssue.Number} for {test.DisplayName}[/]");
+                    var existingUrl = FormatIssueLink(matchingIssue.Number);
+                    AnsiConsole.MarkupLine($"[dim]  Found existing issue {existingUrl} for {test.DisplayName}[/]");
                 }
                 matched++;
             }
@@ -126,7 +156,8 @@ public class GitHubIssueReporter
                 var issueNumber = await CreateIssueAsync(test, ct);
                 if (issueNumber > 0)
                 {
-                    AnsiConsole.MarkupLine($"[green]  Created issue #{issueNumber}[/] for [blue]{test.DisplayName}[/]");
+                    var issueUrl = FormatIssueLink(issueNumber);
+                    AnsiConsole.MarkupLine($"[green]  Created issue {issueUrl}[/] for [blue]{test.DisplayName}[/]");
                     created++;
                 }
                 else
