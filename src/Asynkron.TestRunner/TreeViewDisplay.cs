@@ -73,6 +73,15 @@ public class TreeViewNode
 }
 
 /// <summary>
+/// Flattened node with tree line prefix for rendering
+/// </summary>
+public class FlatTreeNode
+{
+    public required TreeViewNode Node { get; init; }
+    public required string TreePrefix { get; init; }
+}
+
+/// <summary>
 /// Alternative TUI display showing tests as a scrollable tree
 /// </summary>
 public class TreeViewDisplay
@@ -92,8 +101,8 @@ public class TreeViewDisplay
     private readonly Dictionary<string, TreeViewNode> _nodesByPath = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TreeViewNode> _testToNode = new(StringComparer.OrdinalIgnoreCase);
 
-    // Flattened visible nodes for scrolling
-    private List<TreeViewNode> _flattenedNodes = [];
+    // Flattened visible nodes for scrolling (with tree line prefixes)
+    private List<FlatTreeNode> _flattenedNodes = [];
     private int _scrollOffset;
 
     // Global stats
@@ -201,19 +210,42 @@ public class TreeViewDisplay
     private void RebuildFlattenedList()
     {
         _flattenedNodes = [];
-        FlattenNode(_root, 0);
+        FlattenNodeWithPrefix(_root, "", isLast: true, isRoot: true);
     }
 
-    private void FlattenNode(TreeViewNode node, int depth)
+    private void FlattenNodeWithPrefix(TreeViewNode node, string continuationPrefix, bool isLast, bool isRoot)
     {
-        if (node != _root) // Don't include root
+        if (!isRoot)
         {
-            _flattenedNodes.Add(node);
+            // Build the connector for this node
+            var connector = isLast ? "└─ " : "├─ ";
+            var fullPrefix = continuationPrefix + connector;
+
+            _flattenedNodes.Add(new FlatTreeNode
+            {
+                Node = node,
+                TreePrefix = fullPrefix
+            });
         }
 
-        foreach (var child in node.Children.OrderBy(c => c.Name))
+        var sortedChildren = node.Children.OrderBy(c => c.Name).ToList();
+        for (var i = 0; i < sortedChildren.Count; i++)
         {
-            FlattenNode(child, depth + 1);
+            var child = sortedChildren[i];
+            var childIsLast = i == sortedChildren.Count - 1;
+
+            // Build continuation prefix for children
+            string childContinuation;
+            if (isRoot)
+            {
+                childContinuation = "";
+            }
+            else
+            {
+                childContinuation = continuationPrefix + (isLast ? "   " : "│  ");
+            }
+
+            FlattenNodeWithPrefix(child, childContinuation, childIsLast, isRoot: false);
         }
     }
 
@@ -455,21 +487,23 @@ public class TreeViewDisplay
                 .Take(visibleRows)
                 .ToList();
 
-            foreach (var node in visibleNodes)
+            foreach (var flatNode in visibleNodes)
             {
-                var indent = new string(' ', node.Depth * 2);
+                var node = flatNode.Node;
+                var prefix = flatNode.TreePrefix;
                 var icon = GetNodeIcon(node);
                 var color = node.GetStatusColor();
                 var text = node.GetDisplayText();
 
-                // Truncate if too long
-                var maxTextLen = ContentWidth - (node.Depth * 2) - 4;
+                // Truncate if too long (account for prefix length)
+                var prefixLen = prefix.Length;
+                var maxTextLen = ContentWidth - prefixLen - 4;
                 if (text.Length > maxTextLen && maxTextLen > 3)
                 {
                     text = text[..(maxTextLen - 3)] + "...";
                 }
 
-                treeRows.Add(new Markup($"{indent}{icon} [{color}]{Markup.Escape(text)}[/]"));
+                treeRows.Add(new Markup($"[dim]{prefix}[/]{icon} [{color}]{Markup.Escape(text)}[/]"));
             }
 
             // Pad with empty rows to fill the space
