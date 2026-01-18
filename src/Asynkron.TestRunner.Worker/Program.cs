@@ -8,6 +8,14 @@ var frameworks = new ITestFramework[]
     new NUnitFramework()
 };
 
+// IMPORTANT: stdout is reserved for the JSON-lines protocol. Some test assemblies/frameworks may
+// write to Console.Out (especially during module initializers or background threads), which would
+// corrupt the protocol stream and make the coordinator think the worker "ended".
+// Keep a stable writer for the protocol and redirect Console.Out elsewhere.
+var protocolInput = Console.In;
+var protocolOutput = Console.Out;
+Console.SetOut(TextWriter.Synchronized(Console.Error));
+
 var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) =>
 {
@@ -35,7 +43,7 @@ _ = Task.Run(async () =>
     catch { /* ignore */ }
 });
 
-await RunWorkerAsync(Console.In, Console.Out, frameworks, cts.Token);
+await RunWorkerAsync(protocolInput, protocolOutput, frameworks, cts.Token);
 
 static async Task RunWorkerAsync(
     TextReader input,

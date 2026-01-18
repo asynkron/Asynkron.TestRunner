@@ -209,16 +209,25 @@ public class WorkerProcess : IAsyncDisposable
                 throw new WorkerCrashedException(_process.ExitCode);
             }
 
-            var message = await ProtocolIO.ReadAsync(_stdout, ct);
-
-            // Null means stream ended - check if process crashed
-            if (message == null)
+            // Read raw stdout lines so we can tolerate occasional non-protocol output
+            // (some test assemblies/frameworks can write to stdout, which would otherwise
+            // be mistaken for EOF and abort the run).
+            var line = await _stdout.ReadLineAsync(ct);
+            if (line == null)
             {
+                // Null means stream ended - check if process crashed
                 if (_process.HasExited && _process.ExitCode != 0)
                 {
                     throw new WorkerCrashedException(_process.ExitCode);
                 }
                 break;
+            }
+
+            var message = ProtocolIO.Deserialize(line);
+            if (message == null)
+            {
+                // Ignore non-protocol output on stdout (keeps worker resilient for noisy assemblies)
+                continue;
             }
 
             yield return message;
