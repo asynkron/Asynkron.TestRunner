@@ -731,6 +731,12 @@ public class TestRunner
         TestResults results,
         CancellationToken ct)
     {
+        // Only enter interactive mode if console input is available (not redirected)
+        if (Console.IsInputRedirected)
+        {
+            return;
+        }
+
         display.EnableInteractiveMode();
         var interactiveCts = new CancellationTokenSource();
         var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, interactiveCts.Token);
