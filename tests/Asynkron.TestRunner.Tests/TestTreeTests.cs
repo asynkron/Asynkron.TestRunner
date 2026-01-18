@@ -222,4 +222,51 @@ public class TestTreeTests
         // Tests are stored at the deepest leaf nodes (Test1 and Test2 are children of F)
         Assert.Equal(2, node.TotalTestCount);
     }
+
+    [Fact]
+    public void AddTests_TestsWithUnderscoreSeparators_SplitsCorrectly()
+    {
+        var tree = new TestTree();
+        tree.AddTests(["Namespace_Class_Method"]);
+
+        // Should split on underscores to create hierarchy
+        // Expected: Namespace -> Class -> Method
+        var depth = GetTreeDepth(tree.Root);
+        Assert.True(depth >= 3, $"Expected at least 3 levels, got {depth}");
+
+        // Verify the structure
+        var namespaceNode = tree.Root.Children.FirstOrDefault(c => c.Name == "Namespace");
+        Assert.NotNull(namespaceNode);
+
+        var classNode = namespaceNode.Children.FirstOrDefault(c => c.Name == "Class");
+        Assert.NotNull(classNode);
+
+        var methodNode = classNode.Children.FirstOrDefault(c => c.Name == "Method");
+        Assert.NotNull(methodNode);
+        Assert.Single(methodNode.Tests);
+    }
+
+    [Fact]
+    public void FindNodeByPath_WorksWithUnderscoreSeparators()
+    {
+        var tree = new TestTree();
+        tree.AddTests(["Namespace_Class_Method_Test1"]);
+
+        // Should be able to find nodes using underscore-separated paths
+        var node = tree.FindNodeByPath("Namespace_Class");
+
+        Assert.NotNull(node);
+        Assert.Equal("Class", node.Name);
+        Assert.Equal("Namespace_Class", node.FullPath);
+    }
+
+    private static int GetTreeDepth(TestTreeNode node)
+    {
+        if (node.Children.Count == 0)
+        {
+            return 0;
+        }
+
+        return 1 + node.Children.Max(GetTreeDepth);
+    }
 }

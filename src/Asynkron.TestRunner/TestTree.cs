@@ -14,8 +14,8 @@ public class TestTreeNode
 
 public class TestTree
 {
-    // Use dot separator for namespace.class.method structure
-    private static readonly char[] NameSeparators = ['.'];
+    // Use dot and underscore separators for namespace.class.method or namespace_class_method structures
+    private static readonly char[] NameSeparators = ['.', '_'];
 
     private readonly TestTreeNode _root = new() { Name = "Tests", FullPath = "" };
 
@@ -63,11 +63,14 @@ public class TestTree
         var parts = baseName.Split(NameSeparators, StringSplitOptions.RemoveEmptyEntries);
 
         var current = _root;
-        var pathSoFar = "";
+        var pathParts = new List<string>();
 
         foreach (var part in parts)
         {
-            pathSoFar = string.IsNullOrEmpty(pathSoFar) ? part : $"{pathSoFar}.{part}";
+            pathParts.Add(part);
+            
+            // Reconstruct path from the original base name to preserve separators
+            var pathSoFar = ReconstructPath(baseName, pathParts);
 
             var child = current.Children.FirstOrDefault(c => c.Name == part);
             if (child == null)
@@ -80,6 +83,35 @@ public class TestTree
 
         // Add the full test name as a leaf
         current.Tests.Add(testName);
+    }
+
+    private static string ReconstructPath(string originalName, List<string> parts)
+    {
+        // Find the substring in the original name that contains all the parts
+        var searchString = originalName;
+        var result = parts[0];
+        var currentPos = originalName.IndexOf(parts[0]);
+        
+        for (int i = 1; i < parts.Count; i++)
+        {
+            var nextPart = parts[i];
+            var nextPos = originalName.IndexOf(nextPart, currentPos + parts[i - 1].Length);
+            
+            if (nextPos > 0)
+            {
+                // Extract the separator between the parts
+                var separator = originalName.Substring(currentPos + parts[i - 1].Length, nextPos - (currentPos + parts[i - 1].Length));
+                result += separator + nextPart;
+                currentPos = nextPos;
+            }
+            else
+            {
+                // Fallback to dot separator if we can't find the part
+                result += "." + nextPart;
+            }
+        }
+        
+        return result;
     }
 
     private static string GetTestBaseName(string testName)
