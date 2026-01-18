@@ -693,7 +693,10 @@ public class TestRunner
             try { await scrollTask; } catch { }
         }
 
-        // Print failure details after live display
+        // Enter interactive mode after test run completes
+        await RunInteractiveModeAsync(display, assemblyPath, allTests, results, ct);
+
+        // Print failure details after interactive mode exits
         if (failureDetails.Count > 0)
         {
             Console.WriteLine();
@@ -714,6 +717,129 @@ public class TestRunner
             if (failureDetails.Count > 10)
             {
                 AnsiConsole.MarkupLine($"[dim]  ...and {failureDetails.Count - 10} more[/]");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Interactive mode loop for tree view - handles keyboard input for navigation and re-runs
+    /// </summary>
+    private async Task RunInteractiveModeAsync(
+        TreeViewDisplay display,
+        string assemblyPath,
+        List<string> allTests,
+        TestResults results,
+        CancellationToken ct)
+    {
+        display.EnableInteractiveMode();
+        var interactiveCts = new CancellationTokenSource();
+        var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, interactiveCts.Token);
+
+        while (!linkedCts.Token.IsCancellationRequested)
+        {
+            // Show the interactive display
+            await AnsiConsole.Live(display.Render())
+                .AutoClear(false)
+                .StartAsync(async ctx =>
+                {
+                    void UpdateDisplay() => ctx.UpdateTarget(display.Render());
+                    UpdateDisplay();
+
+                    // Handle keyboard input
+                    while (!linkedCts.Token.IsCancellationRequested)
+                    {
+                        if (Console.KeyAvailable)
+                        {
+                            var key = Console.ReadKey(intercept: true);
+                            switch (key.Key)
+                            {
+                                case ConsoleKey.UpArrow:
+                                    display.SelectUp();
+                                    UpdateDisplay();
+                                    break;
+                                case ConsoleKey.DownArrow:
+                                    display.SelectDown();
+                                    UpdateDisplay();
+                                    break;
+                                case ConsoleKey.Enter:
+                                    display.ToggleSelectedNode();
+                                    UpdateDisplay();
+                                    break;
+                                case ConsoleKey.R:
+                                    // Re-run selected branch
+                                    var selectedTests = display.GetSelectedNodeTests();
+                                    var selectedNodeName = display.GetSelectedNodeName();
+                                    if (selectedTests != null && selectedTests.Count > 0)
+                                    {
+                                        // Exit interactive display to run tests
+                                        interactiveCts.Cancel();
+                                        return;
+                                    }
+                                    break;
+                            }
+                        }
+                        await Task.Delay(50, linkedCts.Token).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+                    }
+                });
+
+            // Check if we're re-running or exiting
+            if (interactiveCts.IsCancellationRequested && !ct.IsCancellationRequested)
+            {
+                var selectedTests = display.GetSelectedNodeTests();
+                var selectedNodeName = display.GetSelectedNodeName();
+                
+                if (selectedTests != null && selectedTests.Count > 0)
+                {
+                    // Re-run the selected branch
+                    AnsiConsole.MarkupLine($"\n[blue]Re-running {selectedTests.Count} tests from:[/] [green]{selectedNodeName}[/]\n");
+                    
+                    // Reset results for the re-run
+                    display.ResetResults();
+                    
+                    // Run the selected tests
+                    var rerunResults = new TestResults();
+                    var failureDetails = new List<(string Name, string Message, string? Stack)>();
+                    var failureLock = new object();
+                    
+                    var queue = new WorkQueue(selectedTests);
+                    var batchSizeHolder = new BatchSizeHolder(Math.Max(50, selectedTests.Count / _workerCount / 4));
+                    
+                    await AnsiConsole.Live(display.Render())
+                        .AutoClear(false)
+                        .StartAsync(async ctx =>
+                        {
+                            void UpdateDisplay() => ctx.UpdateTarget(display.Render());
+                            
+                            var workerTasks = Enumerable.Range(0, _workerCount)
+                                .Select(index => RunWorkerTreeViewAsync(assemblyPath, index, queue, batchSizeHolder, rerunResults, display, null, failureDetails, failureLock, UpdateDisplay, ct))
+                                .ToList();
+                            
+                            while (true)
+                            {
+                                UpdateDisplay();
+                                
+                                if (queue.IsComplete)
+                                {
+                                    break;
+                                }
+                                
+                                await Task.Delay(100, ct);
+                            }
+                            
+                            await Task.WhenAll(workerTasks);
+                            UpdateDisplay();
+                        });
+                    
+                    // Reset for next interactive session
+                    interactiveCts = new CancellationTokenSource();
+                    linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, interactiveCts.Token);
+                    display.EnableInteractiveMode();
+                }
+            }
+            else
+            {
+                // User pressed Ctrl+C or cancellation requested
+                break;
             }
         }
     }

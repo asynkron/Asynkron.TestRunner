@@ -32,6 +32,7 @@ public class TreeViewNode
     public int Depth { get; set; }
     public List<TreeViewNode> Children { get; } = [];
     public List<string> Tests { get; } = []; // Leaf test FQNs at this node
+    public bool IsExpanded { get; set; } = true; // For interactive expand/collapse
 
     // Counts
     public int TotalTests { get; set; }
@@ -111,6 +112,7 @@ public class TreeViewDisplay
     // Flattened visible nodes for scrolling (with tree line prefixes)
     private List<FlatTreeNode> _flattenedNodes = [];
     private int _scrollOffset;
+    private int _selectedIndex; // Index in flattened list for interactive mode
 
     // Global stats
     private int _totalTests;
@@ -124,6 +126,7 @@ public class TreeViewDisplay
     private string? _filter;
     private string? _assemblyName;
     private int _workerCount = 1;
+    private bool _interactiveMode; // True when in post-run interactive mode
 
     public TreeViewDisplay(TreeViewSettings? settings = null)
     {
@@ -233,6 +236,12 @@ public class TreeViewDisplay
                 Node = node,
                 TreePrefix = fullPrefix
             });
+        }
+
+        // Only show children if node is expanded
+        if (!node.IsExpanded && !isRoot)
+        {
+            return;
         }
 
         var sortedChildren = node.Children.OrderBy(c => c.Name).ToList();
@@ -438,6 +447,165 @@ public class TreeViewDisplay
         }
     }
 
+    /// <summary>
+    /// Enable interactive mode (for post-run navigation)
+    /// </summary>
+    public void EnableInteractiveMode()
+    {
+        lock (_lock)
+        {
+            _interactiveMode = true;
+            _selectedIndex = 0;
+        }
+    }
+
+    /// <summary>
+    /// Move selection up in interactive mode
+    /// </summary>
+    public void SelectUp()
+    {
+        lock (_lock)
+        {
+            if (!_interactiveMode) return;
+            
+            if (_selectedIndex > 0)
+            {
+                _selectedIndex--;
+                // Auto-scroll if needed
+                if (_selectedIndex < _scrollOffset)
+                {
+                    _scrollOffset = _selectedIndex;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Move selection down in interactive mode
+    /// </summary>
+    public void SelectDown()
+    {
+        lock (_lock)
+        {
+            if (!_interactiveMode) return;
+            
+            if (_selectedIndex < _flattenedNodes.Count - 1)
+            {
+                _selectedIndex++;
+                // Auto-scroll if needed
+                var visibleRows = GetVisibleRows();
+                if (_selectedIndex >= _scrollOffset + visibleRows)
+                {
+                    _scrollOffset = _selectedIndex - visibleRows + 1;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Toggle expand/collapse of the selected node
+    /// </summary>
+    public void ToggleSelectedNode()
+    {
+        lock (_lock)
+        {
+            if (!_interactiveMode) return;
+            
+            if (_selectedIndex >= 0 && _selectedIndex < _flattenedNodes.Count)
+            {
+                var selectedNode = _flattenedNodes[_selectedIndex].Node;
+                if (selectedNode.Children.Count > 0)
+                {
+                    selectedNode.IsExpanded = !selectedNode.IsExpanded;
+                    RebuildFlattenedList();
+                    // Keep selection valid
+                    _selectedIndex = Math.Min(_selectedIndex, _flattenedNodes.Count - 1);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Get all tests under the currently selected node
+    /// </summary>
+    public List<string>? GetSelectedNodeTests()
+    {
+        lock (_lock)
+        {
+            if (!_interactiveMode) return null;
+            
+            if (_selectedIndex >= 0 && _selectedIndex < _flattenedNodes.Count)
+            {
+                var selectedNode = _flattenedNodes[_selectedIndex].Node;
+                return GetAllTestsUnderNode(selectedNode);
+            }
+            
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Get the name of the currently selected node for display
+    /// </summary>
+    public string? GetSelectedNodeName()
+    {
+        lock (_lock)
+        {
+            if (!_interactiveMode) return null;
+            
+            if (_selectedIndex >= 0 && _selectedIndex < _flattenedNodes.Count)
+            {
+                return _flattenedNodes[_selectedIndex].Node.FullPath;
+            }
+            
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Recursively get all tests under a node
+    /// </summary>
+    private static List<string> GetAllTestsUnderNode(TreeViewNode node)
+    {
+        var tests = new List<string>(node.Tests);
+        foreach (var child in node.Children)
+        {
+            tests.AddRange(GetAllTestsUnderNode(child));
+        }
+        return tests;
+    }
+
+    /// <summary>
+    /// Reset test results for re-run
+    /// </summary>
+    public void ResetResults()
+    {
+        lock (_lock)
+        {
+            _totalPassed = 0;
+            _totalFailed = 0;
+            _totalSkipped = 0;
+            _totalHanging = 0;
+            _totalCrashed = 0;
+            _stopwatch.Restart();
+            ResetNodeResults(_root);
+        }
+    }
+
+    private static void ResetNodeResults(TreeViewNode node)
+    {
+        node.Passed = 0;
+        node.Failed = 0;
+        node.Skipped = 0;
+        node.Hanging = 0;
+        node.Crashed = 0;
+        
+        foreach (var child in node.Children)
+        {
+            ResetNodeResults(child);
+        }
+    }
+
     public IRenderable Render()
     {
         lock (_lock)
@@ -497,6 +665,7 @@ public class TreeViewDisplay
                 .Take(visibleRows)
                 .ToList();
 
+            var currentIndex = _scrollOffset;
             foreach (var flatNode in visibleNodes)
             {
                 var node = flatNode.Node;
@@ -506,15 +675,34 @@ public class TreeViewDisplay
                 var textColor = node.GetStatusColor();
                 var text = node.GetDisplayText();
 
-                // Truncate if too long (account for prefix length)
-                var prefixLen = prefix.Length;
+                // Add expand/collapse indicator
+                var expandIcon = "";
+                if (node.Children.Count > 0)
+                {
+                    expandIcon = node.IsExpanded ? "[dim]▼[/] " : "[dim]▶[/] ";
+                }
+
+                // Selection indicator in interactive mode
+                var selectionIndicator = "";
+                if (_interactiveMode && currentIndex == _selectedIndex)
+                {
+                    selectionIndicator = "[yellow]>[/] ";
+                }
+                else if (_interactiveMode)
+                {
+                    selectionIndicator = "  ";
+                }
+
+                // Truncate if too long (account for prefix length and indicators)
+                var prefixLen = prefix.Length + (expandIcon.Length > 0 ? 2 : 0) + (selectionIndicator.Length > 0 ? 2 : 0);
                 var maxTextLen = ContentWidth - prefixLen - 4;
                 if (text.Length > maxTextLen && maxTextLen > 3)
                 {
                     text = text[..(maxTextLen - 3)] + "...";
                 }
 
-                treeRows.Add(new Markup($"[dim]{prefix}[/][{iconColor}]{icon}[/] [{textColor}]{Markup.Escape(text)}[/]"));
+                treeRows.Add(new Markup($"{selectionIndicator}[dim]{prefix}[/]{expandIcon}[{iconColor}]{icon}[/] [{textColor}]{Markup.Escape(text)}[/]"));
+                currentIndex++;
             }
 
             // Pad with empty rows to fill the space
@@ -526,7 +714,13 @@ public class TreeViewDisplay
             rows.Add(new Rows(treeRows));
 
             // Scroll indicator
-            if (_flattenedNodes.Count > visibleRows)
+            if (_interactiveMode)
+            {
+                var scrollInfo = $"[dim]↑↓ navigate | Enter expand/collapse | r re-run | Ctrl+C exit[/]";
+                rows.Add(new Text(""));
+                rows.Add(new Markup(scrollInfo));
+            }
+            else if (_flattenedNodes.Count > visibleRows)
             {
                 var scrollInfo = $"[dim]↑↓ scroll ({_scrollOffset + 1}-{Math.Min(_scrollOffset + visibleRows, _flattenedNodes.Count)}/{_flattenedNodes.Count})[/]";
                 rows.Add(new Text(""));
