@@ -262,6 +262,8 @@ public class TestTreeTests
 
     private static int GetTreeDepth(TestTreeNode node)
     {
+        // Note: Recursive implementation is simple and sufficient for typical test hierarchies.
+        // Test trees rarely exceed depth of 10-20 levels, so stack overflow is not a practical concern.
         if (node.Children.Count == 0)
         {
             return 0;

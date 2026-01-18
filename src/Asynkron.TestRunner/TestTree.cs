@@ -87,17 +87,20 @@ public class TestTree
 
     private static string ReconstructPath(string originalName, List<string> parts)
     {
-        // Find the substring in the original name that contains all the parts
-        var searchString = originalName;
+        // Reconstruct the path by finding each part in the original name
+        // and preserving the separator character(s) between them
         var result = parts[0];
         var currentPos = originalName.IndexOf(parts[0]);
         
         for (int i = 1; i < parts.Count; i++)
         {
             var nextPart = parts[i];
+            // Note: In rare cases where a part name appears multiple times,
+            // this may find the wrong occurrence, but this is acceptable for
+            // typical test naming patterns
             var nextPos = originalName.IndexOf(nextPart, currentPos + parts[i - 1].Length);
             
-            if (nextPos > 0)
+            if (nextPos >= 0)
             {
                 // Extract the separator between the parts
                 var separator = originalName.Substring(currentPos + parts[i - 1].Length, nextPos - (currentPos + parts[i - 1].Length));
