@@ -71,6 +71,27 @@ public class TreeViewNode
 
         return $"{Name} ({Completed}/{TotalTests})";
     }
+
+    /// <summary>
+    /// Gets the name part of the display text (without counter)
+    /// </summary>
+    public string GetDisplayName()
+    {
+        return Name;
+    }
+
+    /// <summary>
+    /// Gets the counter part of the display text, or empty if no tests
+    /// </summary>
+    public string GetDisplayCounter()
+    {
+        if (TotalTests == 0)
+        {
+            return "";
+        }
+
+        return $"({Completed}/{TotalTests})";
+    }
 }
 
 /// <summary>
@@ -672,8 +693,9 @@ public class TreeViewDisplay
                 var prefix = flatNode.TreePrefix;
                 var icon = GetNodeIcon(node);
                 var iconColor = GetNodeIconColor(node);
-                var textColor = node.GetStatusColor();
-                var text = node.GetDisplayText();
+                var statusColor = node.GetStatusColor();
+                var name = node.GetDisplayName();
+                var counter = node.GetDisplayCounter();
 
                 // Add expand/collapse indicator
                 var expandIcon = "";
@@ -693,15 +715,22 @@ public class TreeViewDisplay
                     selectionIndicator = "  ";
                 }
 
+                // Build the display text: name in normal color, counter in status color
+                var displayText = string.IsNullOrEmpty(counter) 
+                    ? Markup.Escape(name)
+                    : $"{Markup.Escape(name)} [{statusColor}]{counter}[/]";
+
                 // Truncate if too long (account for prefix length and indicators)
                 var prefixLen = prefix.Length + (expandIcon.Length > 0 ? 2 : 0) + (selectionIndicator.Length > 0 ? 2 : 0);
                 var maxTextLen = ContentWidth - prefixLen - 4;
-                if (text.Length > maxTextLen && maxTextLen > 3)
+                var fullText = string.IsNullOrEmpty(counter) ? name : $"{name} {counter}";
+                if (fullText.Length > maxTextLen && maxTextLen > 3)
                 {
-                    text = text[..(maxTextLen - 3)] + "...";
+                    var truncatedName = name.Length > maxTextLen - 3 ? name[..(maxTextLen - 3)] + "..." : name;
+                    displayText = Markup.Escape(truncatedName);
                 }
 
-                treeRows.Add(new Markup($"{selectionIndicator}[dim]{prefix}[/]{expandIcon}[{iconColor}]{icon}[/] [{textColor}]{Markup.Escape(text)}[/]"));
+                treeRows.Add(new Markup($"{selectionIndicator}[dim]{prefix}[/]{expandIcon}[{iconColor}]{icon}[/] {displayText}"));
                 currentIndex++;
             }
 
