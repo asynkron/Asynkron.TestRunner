@@ -222,4 +222,42 @@ public class TestTreeTests
         // Tests are stored at the deepest leaf nodes (Test1 and Test2 are children of F)
         Assert.Equal(2, node.TotalTestCount);
     }
+
+    [Fact]
+    public void AddTests_TestsWithUnderscoreSeparators_SplitsCorrectly()
+    {
+        var tree = new TestTree();
+        tree.AddTests([
+            "Namespace.Class.Method_WhenCondition_ThenResult"
+        ]);
+
+        // Should split on both dots and underscores
+        var namespaceNode = tree.Root.Children[0];
+        Assert.Equal("Namespace", namespaceNode.Name);
+
+        var classNode = namespaceNode.Children[0];
+        Assert.Equal("Class", classNode.Name);
+
+        var methodNode = classNode.Children[0];
+        Assert.Equal("Method", methodNode.Name);
+
+        var whenNode = methodNode.Children[0];
+        Assert.Equal("WhenCondition", whenNode.Name);
+
+        var thenNode = whenNode.Children[0];
+        Assert.Equal("ThenResult", thenNode.Name);
+    }
+
+    [Fact]
+    public void FindNodeByPath_WorksWithUnderscoreSeparators()
+    {
+        var tree = new TestTree();
+        tree.AddTests(["Namespace.Class.Method_WhenCondition_ThenResult"]);
+
+        // Should be able to find nodes using underscores in path
+        var node = tree.FindNodeByPath("Namespace.Class.Method");
+
+        Assert.NotNull(node);
+        Assert.Equal("Method", node.Name);
+    }
 }

@@ -14,8 +14,8 @@ public class TestTreeNode
 
 public class TestTree
 {
-    // Use dot separator for namespace.class.method structure
-    private static readonly char[] NameSeparators = ['.'];
+    // Use dot and underscore separators for namespace.class.method_when_then structure
+    private static readonly char[] NameSeparators = ['.', '_'];
 
     private readonly TestTreeNode _root = new() { Name = "Tests", FullPath = "" };
 
