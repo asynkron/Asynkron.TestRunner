@@ -14,9 +14,6 @@ public class TestTreeNode
 
 public class TestTree
 {
-    // Use dot separator for namespace.class.method structure
-    private static readonly char[] NameSeparators = ['.'];
-
     private readonly TestTreeNode _root = new() { Name = "Tests", FullPath = "" };
 
     public TestTreeNode Root => _root;
@@ -60,7 +57,7 @@ public class TestTree
     {
         // Strip parameters: "Namespace.Class.Method(param1, param2)" -> "Namespace.Class.Method"
         var baseName = GetTestBaseName(testName);
-        var parts = baseName.Split(NameSeparators, StringSplitOptions.RemoveEmptyEntries);
+        var parts = SplitNameParts(baseName);
 
         var current = _root;
         var pathSoFar = "";
@@ -80,6 +77,31 @@ public class TestTree
 
         // Add the full test name as a leaf
         current.Tests.Add(testName);
+    }
+
+    private static IEnumerable<string> SplitNameParts(string name)
+    {
+        var dotParts = name.Split('.', StringSplitOptions.RemoveEmptyEntries);
+        if (dotParts.Length == 0)
+        {
+            yield break;
+        }
+
+        for (var i = 0; i < dotParts.Length; i++)
+        {
+            var part = dotParts[i];
+            if (i == dotParts.Length - 1)
+            {
+                foreach (var subPart in part.Split('_', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    yield return subPart;
+                }
+            }
+            else
+            {
+                yield return part;
+            }
+        }
     }
 
     private static string GetTestBaseName(string testName)
@@ -190,7 +212,7 @@ public class TestTree
             return root;
         }
 
-        var parts = path.Split(NameSeparators, StringSplitOptions.RemoveEmptyEntries);
+        var parts = SplitNameParts(path);
         var current = root;
 
         foreach (var part in parts)
