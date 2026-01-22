@@ -51,6 +51,25 @@ public class TestTreeTests
     }
 
     [Fact]
+    public void AddTests_TestsWithUnderscoreSeparators_SplitsCorrectly()
+    {
+        var tree = new TestTree();
+        tree.AddTests(["Suite_SubSuite_TestCase"]);
+
+        Assert.Single(tree.Root.Children);
+        var suiteNode = tree.Root.Children[0];
+        Assert.Equal("Suite", suiteNode.Name);
+
+        Assert.Single(suiteNode.Children);
+        var subSuiteNode = suiteNode.Children[0];
+        Assert.Equal("SubSuite", subSuiteNode.Name);
+
+        Assert.Single(subSuiteNode.Children);
+        var testCaseNode = subSuiteNode.Children[0];
+        Assert.Equal("TestCase", testCaseNode.Name);
+    }
+
+    [Fact]
     public void GetNodesAtDepth_ReturnsCorrectNodes()
     {
         var tree = new TestTree();
@@ -221,5 +240,19 @@ public class TestTreeTests
         Assert.Equal("F", node.Name);
         // Tests are stored at the deepest leaf nodes (Test1 and Test2 are children of F)
         Assert.Equal(2, node.TotalTestCount);
+    }
+
+    [Fact]
+    public void FindNodeByPath_WorksWithUnderscoreSeparators()
+    {
+        var tree = new TestTree();
+        tree.AddTests(["Namespace.Class.Method_WhenCondition_ThenResult"]);
+
+        var node = tree.FindNodeByPath("Namespace.Class.Method");
+
+        Assert.NotNull(node);
+        Assert.Equal("Method", node.Name);
+        Assert.Single(node.Children);
+        Assert.Equal("WhenCondition", node.Children[0].Name);
     }
 }
