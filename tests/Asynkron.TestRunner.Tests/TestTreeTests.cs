@@ -222,4 +222,34 @@ public class TestTreeTests
         // Tests are stored at the deepest leaf nodes (Test1 and Test2 are children of F)
         Assert.Equal(2, node.TotalTestCount);
     }
+
+    [Fact]
+    public void AddTests_TestsWithUnderscoreSeparators_SplitsCorrectly()
+    {
+        var tree = new TestTree();
+        tree.AddTests(["Namespace.Class.Method_WhenCondition_ThenResult"]);
+
+        var methodNode = tree.FindNodeByPath("Namespace.Class.Method");
+
+        Assert.NotNull(methodNode);
+        Assert.Equal("Method", methodNode.Name);
+        Assert.Single(methodNode.Children);
+        Assert.Equal("WhenCondition", methodNode.Children[0].Name);
+        Assert.Single(methodNode.Children[0].Children);
+        Assert.Equal("ThenResult", methodNode.Children[0].Children[0].Name);
+        Assert.Single(methodNode.Children[0].Children[0].Tests);
+    }
+
+    [Fact]
+    public void FindNodeByPath_WorksWithUnderscoreSeparators()
+    {
+        var tree = new TestTree();
+        tree.AddTests(["Namespace.Class.Method_WhenCondition_ThenResult"]);
+
+        var node = tree.FindNodeByPath("Namespace.Class.Method");
+
+        Assert.NotNull(node);
+        Assert.Equal("Method", node.Name);
+        Assert.Equal("Namespace.Class.Method", node.FullPath);
+    }
 }

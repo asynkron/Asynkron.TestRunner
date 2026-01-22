@@ -14,8 +14,8 @@ public class TestTreeNode
 
 public class TestTree
 {
-    // Use dot separator for namespace.class.method structure
-    private static readonly char[] NameSeparators = ['.'];
+    // Use dot/underscore separators for namespace.class.method and BDD-style method names
+    private static readonly char[] NameSeparators = ['.', '_'];
 
     private readonly TestTreeNode _root = new() { Name = "Tests", FullPath = "" };
 
