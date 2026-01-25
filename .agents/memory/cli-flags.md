@@ -11,6 +11,10 @@ Common options and defaults (Program.cs, TestRunner.cs):
 - `--verbose/-v`: writes worker diagnostics to stderr; off by default.
 - `--log <file>`: writes diagnostics to file; off by default. With flag but no value, uses `testrunner.log`.
 - `--resume [file]`: resume disabled by default; `--resume` with no path uses `.testrunner/resume.jsonl`.
+- `--history-passing`: re-run tests that passed in the latest recorded run (from the newest `.testrunner/<projectHash>/*/history.json` by file timestamp).
+- `--history-failing`: re-run tests that failed in the latest recorded run.
+- `--history-hanging`: re-run tests that hung/timed out in the latest recorded run.
+- `--history-crashing`: re-run tests that crashed in the latest recorded run.
 - `--port` (serve/mcp): defaults to 5123.
 - `--output/-o` (tree): writes to stdout when omitted.
 - `--history/-n` (stats): defaults to 10 entries.

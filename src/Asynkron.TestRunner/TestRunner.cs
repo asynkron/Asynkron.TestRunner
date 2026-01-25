@@ -41,6 +41,8 @@ public class TestRunner
     private readonly int _testTimeoutSeconds;
     private readonly int _hangTimeoutSeconds;
     private readonly string? _filter;
+    private readonly HashSet<string>? _includedTests;
+    private readonly string? _historyFilterLabel;
     private readonly bool _quiet;
     private readonly bool _streamingConsole;
     private readonly bool _treeView;
@@ -56,12 +58,14 @@ public class TestRunner
     private readonly Action<TestResultDetail>? _resultCallback;
     private GitHubIssueReporter? _ghReporter;
 
-    public TestRunner(ResultStore store, int? timeoutSeconds = null, int? hangTimeoutSeconds = null, string? filter = null, bool quiet = false, bool streamingConsole = false, bool treeView = false, TreeViewSettings? treeViewSettings = null, int workerCount = 1, bool verbose = false, string? logFile = null, string? resumeFilePath = null, WorkerProfilingSettings? profilingSettings = null, Action<TestResultDetail>? resultCallback = null, bool ghBugReport = false)
+    public TestRunner(ResultStore store, int? timeoutSeconds = null, int? hangTimeoutSeconds = null, string? filter = null, bool quiet = false, bool streamingConsole = false, bool treeView = false, TreeViewSettings? treeViewSettings = null, int workerCount = 1, bool verbose = false, string? logFile = null, string? resumeFilePath = null, WorkerProfilingSettings? profilingSettings = null, IReadOnlyCollection<string>? includedTests = null, string? historyFilterLabel = null, Action<TestResultDetail>? resultCallback = null, bool ghBugReport = false)
     {
         _store = store;
         _testTimeoutSeconds = timeoutSeconds ?? 30;
         _hangTimeoutSeconds = hangTimeoutSeconds ?? _testTimeoutSeconds; // Default to same as test timeout
         _filter = filter;
+        _includedTests = includedTests != null ? new HashSet<string>(includedTests, StringComparer.OrdinalIgnoreCase) : null;
+        _historyFilterLabel = historyFilterLabel;
         _quiet = quiet;
         _streamingConsole = streamingConsole;
         _treeView = treeView;
@@ -413,12 +417,24 @@ public class TestRunner
                     AnsiConsole.MarkupLine($"[dim]Filter applied: {discovered.Count}/{totalDiscovered} tests match ({skippedCount} skipped)[/]");
                 }
 
+                if (_includedTests != null)
+                {
+                    var before = discovered.Count;
+                    discovered = discovered.Where(t => _includedTests.Contains(t.FullyQualifiedName)).ToList();
+                    AnsiConsole.MarkupLine($"[dim]History selection applied: {discovered.Count}/{before} tests selected[/]");
+                }
+
                 allTests = discovered.Select(t => t.FullyQualifiedName).ToList();
             }
 
             if (allTests.Count == 0)
             {
-                if (!string.IsNullOrWhiteSpace(_filter))
+                if (_includedTests != null)
+                {
+                    var label = _historyFilterLabel ?? "history selection";
+                    AnsiConsole.MarkupLine($"[yellow]No tests match {EscapeMarkup(label)}[/]");
+                }
+                else if (!string.IsNullOrWhiteSpace(_filter))
                 {
                     AnsiConsole.MarkupLine($"[yellow]No tests match filter:[/] {_filter}");
                 }
@@ -485,7 +501,7 @@ public class TestRunner
     private async Task RunWithRecoveryLiveAsync(string assemblyPath, List<string> allTests, TestResults results, CancellationToken ct)
     {
         var display = new LiveDisplay();
-        display.SetFilter(_filter);
+        display.SetFilter(_historyFilterLabel ?? _filter);
         display.SetAssembly(assemblyPath);
         display.SetWorkerCount(_workerCount);
         display.SetTimeout(_testTimeoutSeconds);
@@ -591,7 +607,7 @@ public class TestRunner
     private async Task RunWithRecoveryTreeViewAsync(string assemblyPath, List<string> allTests, TestResults results, CancellationToken ct)
     {
         var display = new TreeViewDisplay(_treeViewSettings);
-        display.SetFilter(_filter);
+        display.SetFilter(_historyFilterLabel ?? _filter);
         display.SetAssembly(assemblyPath);
         display.SetWorkerCount(_workerCount);
         display.Initialize(allTests);
@@ -1700,6 +1716,8 @@ public class TestRunner
             Duration = elapsed,
             PassedTests = results.Passed.ToList(),
             FailedTests = results.Failed.ToList(),
+            HangingTests = results.Hanging.ToList(),
+            CrashedTests = results.Crashed.ToList(),
             TimedOutTests = results.Hanging.Concat(results.Crashed).ToList(),
             CompletionOrder = results.CompletionOrder.ToList()
         };

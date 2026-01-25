@@ -28,9 +28,53 @@ public class ResultStore
         _historyFilePath = Path.Combine(_storeFolder, HistoryFileName);
     }
 
+    private ResultStore(string baseFolder, string storeFolder, string historyFilePath, string commandSignature)
+    {
+        _baseFolder = baseFolder;
+        _storeFolder = storeFolder;
+        _historyFilePath = historyFilePath;
+        _commandSignature = commandSignature;
+    }
+
     public string StoreFolder => _storeFolder;
     public string BaseFolder => _baseFolder;
     public string CommandSignature => _commandSignature;
+    public string HistoryFilePath => _historyFilePath;
+
+    /// <summary>
+    /// The project-specific store folder: &lt;repo&gt;/.testrunner/&lt;projectHash&gt;
+    /// </summary>
+    public string ProjectFolder => Directory.GetParent(_storeFolder)?.FullName ?? _storeFolder;
+
+    public static ResultStore FromHistoryFile(string historyFilePath)
+    {
+        if (string.IsNullOrWhiteSpace(historyFilePath))
+        {
+            throw new ArgumentException("History file path is required", nameof(historyFilePath));
+        }
+
+        var fullPath = Path.GetFullPath(historyFilePath);
+        var storeFolder = Path.GetDirectoryName(fullPath);
+        if (string.IsNullOrWhiteSpace(storeFolder))
+        {
+            throw new ArgumentException("Invalid history file path", nameof(historyFilePath));
+        }
+
+        var projectFolder = Directory.GetParent(storeFolder)?.FullName;
+        if (string.IsNullOrWhiteSpace(projectFolder))
+        {
+            throw new ArgumentException("History file path must be inside a .testrunner project folder", nameof(historyFilePath));
+        }
+
+        var baseFolder = Directory.GetParent(projectFolder)?.FullName;
+        if (string.IsNullOrWhiteSpace(baseFolder))
+        {
+            throw new ArgumentException("History file path must be inside a .testrunner store folder", nameof(historyFilePath));
+        }
+
+        var commandSignature = $"(history:{Path.GetFileName(storeFolder)})";
+        return new ResultStore(baseFolder, storeFolder, fullPath, commandSignature);
+    }
 
     public void EnsureStoreExists()
     {
@@ -70,20 +114,25 @@ public class ResultStore
 
     public List<TestRunResult> LoadHistory()
     {
-        if (!File.Exists(_historyFilePath))
+        return LoadHistoryFile(_historyFilePath);
+    }
+
+    public static List<TestRunResult> LoadHistoryFile(string historyFilePath)
+    {
+        if (!File.Exists(historyFilePath))
         {
-            return new List<TestRunResult>();
+            return [];
         }
 
         try
         {
-            var json = File.ReadAllText(_historyFilePath);
+            var json = File.ReadAllText(historyFilePath);
             return JsonSerializer.Deserialize<List<TestRunResult>>(json, GetJsonOptions())
-                   ?? new List<TestRunResult>();
+                   ?? [];
         }
         catch
         {
-            return new List<TestRunResult>();
+            return [];
         }
     }
 
@@ -115,6 +164,49 @@ public class ResultStore
 
         var json = JsonSerializer.Serialize(history, GetJsonOptions());
         File.WriteAllText(_historyFilePath, json);
+    }
+
+    public string? FindLatestHistoryFile()
+    {
+        if (!Directory.Exists(ProjectFolder))
+        {
+            return null;
+        }
+
+        string? latestFile = null;
+        var latestWrite = DateTime.MinValue;
+
+        foreach (var dir in Directory.EnumerateDirectories(ProjectFolder))
+        {
+            var file = Path.Combine(dir, HistoryFileName);
+            if (!File.Exists(file))
+            {
+                continue;
+            }
+
+            try
+            {
+                var write = File.GetLastWriteTimeUtc(file);
+                if (latestFile == null || write > latestWrite)
+                {
+                    latestFile = file;
+                    latestWrite = write;
+                }
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+
+        return latestFile;
+    }
+
+    public static TestRunResult? GetLatestRun(string historyFilePath)
+    {
+        return LoadHistoryFile(historyFilePath)
+            .OrderByDescending(r => r.Timestamp)
+            .FirstOrDefault();
     }
 
     public List<TestRunResult> GetRecentRuns(int count)

@@ -117,6 +117,7 @@ static async Task<int> HandleRunAsync(string[] args)
     var resumeEnabled = ParseResume(args, out var resumeFile);
     var profilingSettings = ParseProfilingSettings(args);
     var ghBugReport = ParseGhBugReport(args);
+    var historySelection = ParseHistorySelection(args);
 
     if (assemblyPaths.Count == 0)
     {
@@ -125,9 +126,29 @@ static async Task<int> HandleRunAsync(string[] args)
         return 1;
     }
 
-    var store = new ResultStore();
+    var (store, selectedTests, historyLabel, selectionError, shouldExit, exitCode) =
+        ResolveHistorySelection(historySelection);
+
+    if (shouldExit)
+    {
+        if (!string.IsNullOrWhiteSpace(selectionError))
+        {
+            Console.WriteLine(selectionError);
+        }
+        else if (!string.IsNullOrWhiteSpace(historyLabel))
+        {
+            Console.WriteLine(historyLabel);
+        }
+        return exitCode;
+    }
+
     var treeSettings = treeView ? new TreeViewSettings { MaxDepth = treeDepth } : null;
-    var runner = new TestRunner(store, timeout, hangTimeout, filter, quiet, streamingConsole, treeView, treeSettings, workers, verbose, logFile, resumeEnabled ? resumeFile : null, profilingSettings, ghBugReport: ghBugReport);
+    if (!string.IsNullOrWhiteSpace(historyLabel))
+    {
+        Console.WriteLine(historyLabel);
+    }
+
+    var runner = new TestRunner(store, timeout, hangTimeout, filter, quiet, streamingConsole, treeView, treeSettings, workers, verbose, logFile, resumeEnabled ? resumeFile : null, profilingSettings, includedTests: selectedTests, historyFilterLabel: historyLabel, ghBugReport: ghBugReport);
     return await runner.RunTestsAsync(assemblyPaths.ToArray());
 }
 
@@ -159,6 +180,23 @@ static async Task<int> HandleAutoRunAsync(string[] args)
     var overallExitCode = 0;
     var results = new List<(string Project, int ExitCode, TimeSpan Duration)>();
 
+    var historySelection = ParseHistorySelection(args);
+    var (store, selectedTests, historyLabel, selectionError, shouldExit, selectionExitCode) =
+        ResolveHistorySelection(historySelection);
+
+    if (shouldExit)
+    {
+        if (!string.IsNullOrWhiteSpace(selectionError))
+        {
+            Console.WriteLine(selectionError);
+        }
+        else if (!string.IsNullOrWhiteSpace(historyLabel))
+        {
+            Console.WriteLine(historyLabel);
+        }
+        return selectionExitCode;
+    }
+
     foreach (var project in testProjects)
     {
         var projectName = Path.GetFileNameWithoutExtension(project);
@@ -170,12 +208,35 @@ static async Task<int> HandleAutoRunAsync(string[] args)
         
         // Build args array with project path
         var runArgs = new[] { "run", project }.Concat(args).ToArray();
-        var exitCode = await HandleRunAsync(runArgs);
+
+        if (!string.IsNullOrWhiteSpace(historyLabel))
+        {
+            Console.WriteLine(historyLabel);
+        }
+
+        var filter = ParseFilter(runArgs);
+        var timeout = ParseTimeout(runArgs);
+        var hangTimeout = ParseHangTimeout(runArgs);
+        var quiet = ParseQuiet(runArgs);
+        var streamingConsole = ParseConsole(runArgs);
+        var treeView = ParseTreeView(runArgs);
+        var treeDepth = ParseTreeDepth(runArgs);
+        var workers = ParseWorkers(runArgs) ?? 4;
+        var verbose = ParseVerbose(runArgs);
+        var logFile = ParseLogFile(runArgs);
+        var resumeEnabled = ParseResume(runArgs, out var resumeFile);
+        var profilingSettings = ParseProfilingSettings(runArgs);
+        var ghBugReport = ParseGhBugReport(runArgs);
+        var treeSettings = treeView ? new TreeViewSettings { MaxDepth = treeDepth } : null;
+
+        var assemblyPaths = ExtractAssemblyPaths(runArgs);
+        var runner = new TestRunner(store, timeout, hangTimeout, filter, quiet, streamingConsole, treeView, treeSettings, workers, verbose, logFile, resumeEnabled ? resumeFile : null, profilingSettings, includedTests: selectedTests, historyFilterLabel: historyLabel, ghBugReport: ghBugReport);
+        var runExitCode = await runner.RunTestsAsync(assemblyPaths.ToArray());
         
         stopwatch.Stop();
-        results.Add((projectName, exitCode, stopwatch.Elapsed));
+        results.Add((projectName, runExitCode, stopwatch.Elapsed));
         
-        if (exitCode != 0)
+        if (runExitCode != 0)
         {
             overallExitCode = 1;
         }
@@ -188,9 +249,9 @@ static async Task<int> HandleAutoRunAsync(string[] args)
     Console.WriteLine("Summary");
     Console.WriteLine($"{'=',-60}");
     
-    foreach (var (project, exitCode, duration) in results)
+    foreach (var (project, projectExitCode, duration) in results)
     {
-        var status = exitCode == 0 ? "\u001b[32mPASSED\u001b[0m" : "\u001b[31mFAILED\u001b[0m";
+        var status = projectExitCode == 0 ? "\u001b[32mPASSED\u001b[0m" : "\u001b[31mFAILED\u001b[0m";
         Console.WriteLine($"  {status} {project} ({duration.TotalSeconds:F1}s)");
     }
     
@@ -200,6 +261,128 @@ static async Task<int> HandleAutoRunAsync(string[] args)
     Console.WriteLine($"Total: {passed} passed, {failed} failed");
     
     return overallExitCode;
+}
+
+static HistorySelection ParseHistorySelection(string[] args)
+{
+    var selection = HistorySelection.None;
+    if (HasOption(args, "--history-passing"))
+    {
+        selection |= HistorySelection.Passing;
+    }
+
+    if (HasOption(args, "--history-failing"))
+    {
+        selection |= HistorySelection.Failing;
+    }
+
+    if (HasOption(args, "--history-hanging"))
+    {
+        selection |= HistorySelection.Hanging;
+    }
+
+    if (HasOption(args, "--history-crashing"))
+    {
+        selection |= HistorySelection.Crashing;
+    }
+
+    return selection;
+}
+
+static (ResultStore Store, IReadOnlyCollection<string>? SelectedTests, string? HistoryLabel, string? Error, bool ShouldExit, int ExitCode)
+    ResolveHistorySelection(HistorySelection selection)
+{
+    if (selection == HistorySelection.None)
+    {
+        return (new ResultStore(), null, null, null, false, 0);
+    }
+
+    var probeStore = new ResultStore();
+    var historyFile = probeStore.FindLatestHistoryFile();
+
+    if (string.IsNullOrWhiteSpace(historyFile))
+    {
+        return (probeStore, null, null, "No test history found for this repo. Run `testrunner` once to generate `.testrunner/**/history.json`.", true, 1);
+    }
+
+    var latestRun = ResultStore.GetLatestRun(historyFile);
+    if (latestRun == null)
+    {
+        return (probeStore, null, null, $"History file is empty or invalid: {historyFile}", true, 1);
+    }
+
+    var selected = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    if (selection.HasFlag(HistorySelection.Passing))
+    {
+        selected.UnionWith(latestRun.PassedTests);
+    }
+
+    if (selection.HasFlag(HistorySelection.Failing))
+    {
+        selected.UnionWith(latestRun.FailedTests);
+    }
+
+    if (selection.HasFlag(HistorySelection.Hanging))
+    {
+        if (latestRun.HangingTests.Count > 0)
+        {
+            selected.UnionWith(latestRun.HangingTests);
+        }
+        else
+        {
+            selected.UnionWith(latestRun.TimedOutTests);
+        }
+    }
+
+    if (selection.HasFlag(HistorySelection.Crashing))
+    {
+        if (latestRun.CrashedTests.Count > 0)
+        {
+            selected.UnionWith(latestRun.CrashedTests);
+        }
+        else
+        {
+            selected.UnionWith(latestRun.TimedOutTests);
+        }
+    }
+
+    var store = ResultStore.FromHistoryFile(historyFile);
+    var selectionText = DescribeHistorySelection(selection);
+    var label = $"History: {selectionText} from {latestRun.Timestamp:yyyy-MM-dd HH:mm:ss} ({selected.Count} tests)";
+
+    if (selected.Count == 0)
+    {
+        return (store, null, label + " (none)", null, true, 0);
+    }
+
+    return (store, selected, label, null, false, 0);
+}
+
+static string DescribeHistorySelection(HistorySelection selection)
+{
+    var parts = new List<string>();
+    if (selection.HasFlag(HistorySelection.Passing))
+    {
+        parts.Add("passing");
+    }
+
+    if (selection.HasFlag(HistorySelection.Failing))
+    {
+        parts.Add("failing");
+    }
+
+    if (selection.HasFlag(HistorySelection.Hanging))
+    {
+        parts.Add("hanging");
+    }
+
+    if (selection.HasFlag(HistorySelection.Crashing))
+    {
+        parts.Add("crashing");
+    }
+
+    return parts.Count == 0 ? "none" : string.Join("+", parts);
 }
 
 static List<string> FindTestProjects(string rootDir)
@@ -833,6 +1016,10 @@ static void PrintUsage()
           -v, --verbose                Show diagnostic logs on stderr
           --log <file>                 Write diagnostic logs to file
           --resume [file]              Resume from checkpoint (default: .testrunner/resume.jsonl)
+          --history-passing            Re-run tests that passed in the latest recorded run
+          --history-failing            Re-run tests that failed in the latest recorded run
+          --history-hanging            Re-run tests that hung/timed out in the latest recorded run
+          --history-crashing           Re-run tests that crashed in the latest recorded run
           --gh-bugreport               Auto-create GitHub issues for failing tests (requires gh CLI)
           --profile-cpu                Collect CPU sampling traces per worker
           --profile-memory             Collect allocation traces per worker
@@ -843,6 +1030,8 @@ static void PrintUsage()
 
         Examples:
           testrunner                                     # Auto-detect and run all test projects
+          testrunner --history-failing                    # Re-run failing tests from last run
+          testrunner --history-passing                    # Re-run passing tests (regression check)
           testrunner run ./bin/Release/net8.0/MyTests.dll
           testrunner run MyTests.csproj --console --filter "UserTests"
           testrunner run MyTests.dll --filter "Class=UserTests"
@@ -856,4 +1045,14 @@ static void PrintUsage()
           - Simple substring filtering or structured filters (Class=, Method=, etc.)
           - Auto-create GitHub issues for failures with --gh-bugreport (matches existing issues first)
         """);
+}
+
+[Flags]
+enum HistorySelection
+{
+    None = 0,
+    Passing = 1 << 0,
+    Failing = 1 << 1,
+    Hanging = 1 << 2,
+    Crashing = 1 << 3
 }

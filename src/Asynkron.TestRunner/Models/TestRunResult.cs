@@ -23,6 +23,16 @@ public class TestRunResult
     public List<string> TimedOutTests { get; set; } = [];
 
     /// <summary>
+    /// Names of tests that hung (no output received within timeout).
+    /// </summary>
+    public List<string> HangingTests { get; set; } = [];
+
+    /// <summary>
+    /// Names of tests that crashed (worker died while running).
+    /// </summary>
+    public List<string> CrashedTests { get; set; } = [];
+
+    /// <summary>
     /// Names of tests that passed in this run
     /// </summary>
     public List<string> PassedTests { get; set; } = [];
