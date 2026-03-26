@@ -12,7 +12,6 @@ public class WorkQueue
     private readonly Queue<string> _suspicious = new();
     private readonly Queue<string> _confirmed = new(); // Tests that actually triggered timeouts
     private readonly Dictionary<int, HashSet<string>> _assigned = new();
-    private readonly HashSet<string> _attemptedInIsolation = new(); // Tests already tried at batch=1
 
     public WorkQueue(IEnumerable<string> tests)
     {
@@ -153,7 +152,6 @@ public class WorkQueue
                 var test = _confirmed.Dequeue();
                 batch.Add(test);
                 value.Add(test);
-                _attemptedInIsolation.Add(test);
             }
 
             return batch;
@@ -209,13 +207,9 @@ public class WorkQueue
     /// <summary>
     /// Mark tests as confirmed bad - they triggered a timeout/crash.
     /// These skip tier progression and wait for isolation mode (batch=1).
-    /// Tests that have already been attempted in isolation are NOT re-queued
-    /// (they would just crash again in an infinite loop).
-    /// Returns the list of tests that were permanently abandoned (already tried in isolation).
     /// </summary>
-    public List<string> MarkConfirmed(int workerId, IEnumerable<string> tests)
+    public void MarkConfirmed(int workerId, IEnumerable<string> tests)
     {
-        var abandoned = new List<string>();
         lock (_lock)
         {
             if (_assigned.TryGetValue(workerId, out var assigned))
@@ -223,20 +217,10 @@ public class WorkQueue
                 foreach (var test in tests)
                 {
                     assigned.Remove(test);
-                    if (_attemptedInIsolation.Contains(test))
-                    {
-                        // Already tried in isolation and crashed again — give up
-                        abandoned.Add(test);
-                    }
-                    else
-                    {
-                        _confirmed.Enqueue(test);
-                    }
+                    _confirmed.Enqueue(test);
                 }
             }
         }
-
-        return abandoned;
     }
 
     /// <summary>
