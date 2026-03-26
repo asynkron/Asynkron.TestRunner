@@ -12,8 +12,7 @@ public class WorkQueue
     private readonly Queue<string> _suspicious = new();
     private readonly Queue<string> _confirmed = new(); // Tests that actually triggered timeouts
     private readonly Dictionary<int, HashSet<string>> _assigned = new();
-    private readonly Dictionary<string, int> _isolationAttempts = new(); // Tests tried at batch=1, with attempt count
-    private const int MaxIsolationAttempts = 2; // Allow 2 isolation attempts before permanently abandoning
+    private readonly HashSet<string> _attemptedInIsolation = new(); // Tests already tried at batch=1
 
     public WorkQueue(IEnumerable<string> tests)
     {
@@ -154,7 +153,7 @@ public class WorkQueue
                 var test = _confirmed.Dequeue();
                 batch.Add(test);
                 value.Add(test);
-                _isolationAttempts[test] = _isolationAttempts.GetValueOrDefault(test) + 1;
+                _attemptedInIsolation.Add(test);
             }
 
             return batch;
@@ -243,9 +242,9 @@ public class WorkQueue
                 foreach (var test in tests)
                 {
                     assigned.Remove(test);
-                    if (_isolationAttempts.GetValueOrDefault(test) >= MaxIsolationAttempts)
+                    if (_attemptedInIsolation.Contains(test))
                     {
-                        // Tried in isolation multiple times and keeps crashing — give up
+                        // Already tried in isolation and crashed again — give up
                         abandoned.Add(test);
                     }
                     else
