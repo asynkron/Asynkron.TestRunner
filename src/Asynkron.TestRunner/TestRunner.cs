@@ -1162,19 +1162,29 @@ public class TestRunner
             {
                 using var cts = new CancellationTokenSource();
                 var completedInBatch = 0;
-                // Use hang timeout for small batches (retrying suspect tests)
-                var streamTimeout = currentBatchSize <= 10 ? _hangTimeoutSeconds : _testTimeoutSeconds;
+                // Use longer timeout for isolation mode (batch=1) — these tests already
+                // proved they need more time or cause crashes. Give them 2x normal timeout.
+                // For small batches (retrying suspect tests), use hang timeout.
+                var streamTimeout = currentBatchSize == 1
+                    ? _testTimeoutSeconds * 2
+                    : currentBatchSize <= 10
+                        ? _hangTimeoutSeconds
+                        : _testTimeoutSeconds;
 
                 await foreach (var msg in worker.RunAsync(assemblyPath, testsToRun, streamTimeout, cts.Token)
                     .WithTimeout(TimeSpan.FromSeconds(streamTimeout), cts))
                 {
                     display.WorkerActivity(workerIndex);
 
-                    // Check for per-test timeout - uses hang timeout for faster detection
+                    // Check for per-test timeout - uses hang timeout for faster detection.
+                    // In isolation mode, use the escalated stream timeout instead.
+                    var perTestTimeout = currentBatchSize == 1
+                        ? streamTimeout * 2
+                        : _hangTimeoutSeconds * 2;
                     var now = DateTime.UtcNow;
                     var stuckTests = running
                         .Where(fqn => testStartTimes.TryGetValue(fqn, out var start) &&
-                                      (now - start).TotalSeconds >= _hangTimeoutSeconds * 2)
+                                      (now - start).TotalSeconds >= perTestTimeout)
                         .ToList();
 
                     if (stuckTests.Count > 0)
@@ -1390,11 +1400,26 @@ public class TestRunner
             {
                 // Running tests caused the crash - fast track to isolation
                 Log(workerIndex, $"CRASHED: {running.Count} running → confirmed, rest → suspicious, exit={ex.ExitCode}");
-                queue.MarkConfirmed(workerIndex, running);
+                var abandoned = queue.MarkConfirmed(workerIndex, running);
                 foreach (var fqn in running)
                 {
                     var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
                     display.TestRemoved(dn);
+                }
+
+                // Tests that already crashed in isolation are permanently marked as crashed
+                foreach (var fqn in abandoned)
+                {
+                    Log(workerIndex, $"ABANDONED (crashed in isolation): {fqn}");
+                    lock (results)
+                    {
+                        results.AddCrashed(fqn);
+                    }
+
+                    var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
+                    display.TestCrashed(dn);
+                    MarkResume(resumeTracker, "crashed", fqn, dn);
+                    ReportCrashedOrHanging(fqn, "crashed", testOutput, $"Crashed in isolation (exit={ex.ExitCode})");
                 }
                 // Never-started tests go to suspicious
                 var neverStarted = queue.GetAssigned(workerIndex);
