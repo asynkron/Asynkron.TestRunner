@@ -1165,8 +1165,10 @@ public class TestRunner
                 // Use longer timeout for isolation mode (batch=1) — these tests already
                 // proved they need more time or cause crashes. Give them 2x normal timeout.
                 // For small batches (retrying suspect tests), use hang timeout.
+                // Isolation mode gets 4x timeout — these are known-difficult tests
+                // that need extra time (heavy regex, URI encoding, etc.)
                 var streamTimeout = currentBatchSize == 1
-                    ? _testTimeoutSeconds * 2
+                    ? _testTimeoutSeconds * 4
                     : currentBatchSize <= 10
                         ? _hangTimeoutSeconds
                         : _testTimeoutSeconds;
@@ -1343,6 +1345,16 @@ public class TestRunner
                         case ErrorEvent:
                             break;
                     }
+                }
+
+                // In isolation mode, kill and restart the worker after each test
+                // to ensure the next isolation test runs in a fresh process with
+                // no accumulated memory pressure from previous tests.
+                if (currentBatchSize == 1 && running.Count == 0)
+                {
+                    worker.Kill();
+                    display.WorkerRestarting(workerIndex);
+                    break;
                 }
 
                 // Stream ended - check for any remaining assigned tests
