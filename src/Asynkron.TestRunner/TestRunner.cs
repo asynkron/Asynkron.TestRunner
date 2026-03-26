@@ -1386,12 +1386,12 @@ public class TestRunner
                     var dn = fqnToDisplayName.GetValueOrDefault(fqn, fqn);
                     display.TestRemoved(dn);
                 }
-                // Never-started tests go to suspicious (they might be fine)
+                // Never-started tests go back to pending — they're innocent bystanders
                 var neverStarted = queue.GetAssigned(workerIndex);
                 if (neverStarted.Count > 0)
                 {
-                    Log(workerIndex, $"{neverStarted.Count} never started → suspicious");
-                    queue.MarkSuspicious(workerIndex, neverStarted);
+                    Log(workerIndex, $"{neverStarted.Count} never started → back to pending");
+                    queue.ReturnToPending(workerIndex, neverStarted);
                 }
                 worker.Kill();
                 display.WorkerRestarting(workerIndex);

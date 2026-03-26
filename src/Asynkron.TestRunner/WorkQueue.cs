@@ -189,6 +189,25 @@ public class WorkQueue
     }
 
     /// <summary>
+    /// Return tests directly to pending queue - they're innocent bystanders
+    /// that never started running and should be retried immediately at normal batch size.
+    /// </summary>
+    public void ReturnToPending(int workerId, IEnumerable<string> tests)
+    {
+        lock (_lock)
+        {
+            if (_assigned.TryGetValue(workerId, out var assigned))
+            {
+                foreach (var test in tests)
+                {
+                    assigned.Remove(test);
+                    _pending.Enqueue(test);
+                }
+            }
+        }
+    }
+
+    /// <summary>
     /// Mark tests as suspicious - they'll be retried after promotion.
     /// </summary>
     public void MarkSuspicious(int workerId, IEnumerable<string> tests)
