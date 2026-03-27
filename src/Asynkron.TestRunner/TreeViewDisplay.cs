@@ -71,6 +71,27 @@ public class TreeViewNode
 
         return $"{Name} ({Completed}/{TotalTests})";
     }
+
+    /// <summary>
+    /// Gets the name part of the display text (without counter)
+    /// </summary>
+    public string GetDisplayName()
+    {
+        return Name;
+    }
+
+    /// <summary>
+    /// Gets the counter part of the display text, or empty if no tests
+    /// </summary>
+    public string GetDisplayCounter()
+    {
+        if (TotalTests == 0)
+        {
+            return "";
+        }
+
+        return $"({Completed}/{TotalTests})";
+    }
 }
 
 /// <summary>
@@ -672,8 +693,9 @@ public class TreeViewDisplay
                 var prefix = flatNode.TreePrefix;
                 var icon = GetNodeIcon(node);
                 var iconColor = GetNodeIconColor(node);
-                var textColor = node.GetStatusColor();
-                var text = node.GetDisplayText();
+                var statusColor = node.GetStatusColor();
+                var name = node.GetDisplayName();
+                var counter = node.GetDisplayCounter();
 
                 // Add expand/collapse indicator
                 var expandIcon = "";
@@ -693,15 +715,32 @@ public class TreeViewDisplay
                     selectionIndicator = "  ";
                 }
 
+                // Build the display text: name in normal color, counter in status color
+                var displayText = BuildDisplayText(name, counter, statusColor);
+
                 // Truncate if too long (account for prefix length and indicators)
                 var prefixLen = prefix.Length + (expandIcon.Length > 0 ? 2 : 0) + (selectionIndicator.Length > 0 ? 2 : 0);
                 var maxTextLen = ContentWidth - prefixLen - 4;
-                if (text.Length > maxTextLen && maxTextLen > 3)
+                var fullText = string.IsNullOrEmpty(counter) ? name : $"{name} {counter}";
+                if (fullText.Length > maxTextLen && maxTextLen > 3)
                 {
-                    text = text[..(maxTextLen - 3)] + "...";
+                    // When truncating, preserve the counter and truncate only the name
+                    var counterLength = string.IsNullOrEmpty(counter) ? 0 : counter.Length + 1; // +1 for space
+                    var availableForName = maxTextLen - counterLength - 3; // -3 for "..."
+                    if (availableForName > 0)
+                    {
+                        var truncatedName = name[..availableForName] + "...";
+                        displayText = BuildDisplayText(truncatedName, counter, statusColor);
+                    }
+                    else
+                    {
+                        // Name is too long even with truncation, just show truncated name without counter
+                        var truncatedName = name[..(maxTextLen - 3)] + "...";
+                        displayText = Markup.Escape(truncatedName);
+                    }
                 }
 
-                treeRows.Add(new Markup($"{selectionIndicator}[dim]{prefix}[/]{expandIcon}[{iconColor}]{icon}[/] [{textColor}]{Markup.Escape(text)}[/]"));
+                treeRows.Add(new Markup($"{selectionIndicator}[dim]{prefix}[/]{expandIcon}[{iconColor}]{icon}[/] {displayText}"));
                 currentIndex++;
             }
 
@@ -770,6 +809,19 @@ public class TreeViewDisplay
     private static int GetVisibleRows()
     {
         return Math.Max(5, ContentHeight - 2);
+    }
+
+    /// <summary>
+    /// Builds display text with name in normal color and counter in status color
+    /// </summary>
+    private static string BuildDisplayText(string name, string counter, string statusColor)
+    {
+        if (string.IsNullOrEmpty(counter))
+        {
+            return Markup.Escape(name);
+        }
+        
+        return $"{Markup.Escape(name)} [{statusColor}]{counter}[/]";
     }
 
     private string GetNodeIcon(TreeViewNode node)
